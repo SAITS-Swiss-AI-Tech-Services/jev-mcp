@@ -1,82 +1,83 @@
-"""Ein Lauf des Browser-Agenten: begrenzt, überwacht und in Worten erklärt.
+"""One run of the browser agent: bounded, supervised and explained in words.
 
-Diese Schicht liegt zwischen der MCP-Werkzeugschicht und `jev_ultrafast`. Sie
-tut vier Dinge, die die Bibliothek nicht tut:
+This layer sits between the MCP tool layer and `jev_ultrafast`. It does four
+things the library does not do:
 
-1. Sie wendet die Umgebung an, bevor irgendetwas läuft. `jev_ultrafast/model.py`
-   liest seine Variablen erst beim Aufruf aus `os.environ`, und seine eingebaute
-   Vorgabe zeigt auf DeepSeek. Ohne `apply_environment()` liefe ein fremder
-   Schlüssel still gegen den falschen Endpunkt. Meldet die Anwendung `ok=False`,
-   startet kein Lauf, und die Hinweise stehen in der Antwort.
-2. Sie hängt die Domain-Treue aus `guards.py` an beide vorgesehenen Zeitpunkte.
-3. Sie begrenzt den Lauf zweifach: in Aktionen und in Wanduhrzeit. Die
-   Bibliothek kennt nur das Aktionsbudget, und ein einzelner Schritt kann hängen.
-4. Sie übersetzt die knappen englischen Ausnahmen der Bibliothek in ganze
-   deutsche Sätze, die sagen, was passiert ist und was man tun kann.
+1. It applies the environment before anything runs. `jev_ultrafast/model.py`
+   reads its variables from `os.environ` only at call time, and its built-in
+   default points to DeepSeek. Without `apply_environment()` a foreign key
+   would silently run against the wrong endpoint. If applying reports
+   `ok=False`, no run starts, and the notes are in the response.
+2. It attaches the domain lock from `guards.py` to both intended moments.
+3. It bounds the run twice: in actions and in wall-clock time. The library
+   only knows the action budget, and a single step can hang.
+4. It translates the terse English exceptions of the library into complete
+   sentences that say what happened and what can be done.
 
-Die Zieladresse vor dem Klick: was die Bibliothek hergibt
+The target address before the click: what the library provides
+---------------------------------------------------------------
+Checked on 2026-09-20 in `jev_ultrafast/snapshot.js` and `browser.py`.
+
+The element table the decision model sees (`page["actions"]`, built in
+`snapshot.js` line 61) carries **no** target address. It contains `node`,
+`role`, `label`, `kind` and `value`, nothing more.
+
+The target address exists nonetheless, in a different place: `cache.guard()`
+in `snapshot.js` lines 47 to 54 creates a tuple of fourteen fields for every
+element, and position 12 holds `e.getAttribute('href')`. These tuples come
+along as `page["guards"]`, where `browser.py` line 97 uses them for the
+staleness check. We read them there as well, see `planned_target_url()`.
+
+The protection therefore applies before the click, but not without gaps. To be
+honest:
+
+* Only `a[href]` provides an address. A `<button>`, a form submission or a
+  click that only a script turns into a navigation contributes nothing. There
+  the domain lock only applies after the load, and in the logged-in profile the
+  loaded page already is the damage.
+* `href="javascript:..."` does not say where it leads. We do not check it as a
+  navigation, otherwise every ordinary button link would stop the run, and we
+  record it as a note instead.
+* Position 12 is a slot in an unnamed tuple of the library. If the order there
+  changes, we read the wrong field. That is why we check two things: the length
+  of the tuple, which catches insertions and removals, and the shape of the
+  value read, which catches a swap. Right next to the address sits the text
+  surrounding the element, and that would otherwise turn into a plausible
+  address on the start domain. Both end in a note, never in silently waving it
+  through. A contract test also holds length and position against the
+  installed `snapshot.js`.
+
+How addresses are read
+----------------------
+There is exactly one way of reading addresses in the whole project, and it
+lives in `guards.py`. This module therefore never resolves on its own but calls
+`guards.resolve_url()`. The reason is explained there in detail:
+`urllib.parse.urljoin` reads the backslash as an ordinary character, the
+browser turns it into a slash, and whoever checks the first reading and
+executes the second checks the wrong address.
+
+What the result contains, and what that means for secrets
 ---------------------------------------------------------
-Nachgesehen am 20.09.2026 in `jev_ultrafast/snapshot.js` und `browser.py`.
+`RunResult` can be turned into JSON via `dataclasses.asdict()` without special
+handling. It is built from a fixed list of fields, never from state passed
+through from the library. Keys from the environment or from the configuration
+are therefore not in it.
 
-Die Elementtabelle, die das Entscheidungsmodell sieht (`page["actions"]`,
-gebaut in `snapshot.js` Zeile 61), trägt **keine** Zieladresse. Sie enthält
-`node`, `role`, `label`, `kind` und `value`, mehr nicht.
+Two fields do carry content that the task produced, however, and that is
+intentional:
 
-Die Zieladresse gibt es trotzdem, an einer anderen Stelle: `cache.guard()` in
-`snapshot.js` Zeile 47 bis 54 legt für jedes Element ein Tupel aus vierzehn
-Feldern an, und an Position 12 steht `e.getAttribute('href')`. Diese Tupel
-kommen als `page["guards"]` mit, wo `browser.py` Zeile 97 sie zur
-Veraltet-Prüfung benutzt. Wir lesen sie dort mit, siehe `planned_target_url()`.
+* `RunResult.goals` carries the task text verbatim, exactly as it came in.
+* `StepRecord.text` carries every value the agent typed into a field.
 
-Der Schutz greift damit vor dem Klick, aber nicht lückenlos. Ehrlich gesagt:
+`snapshot.js` line 9 excludes fields of type `password`, `file` and `hidden`
+from observation, so nothing is typed there. A one-time password, a customer
+number or an ID number in an ordinary text field is not covered by that and
+ends up in the result.
 
-* Nur `a[href]` liefert eine Adresse. Ein `<button>`, ein Formular-Absenden oder
-  ein Klick, den erst ein Skript zur Navigation macht, trägt nichts bei. Dort
-  greift die Domain-Treue erst nach dem Laden, und im eingeloggten Profil ist
-  die geladene Seite bereits der Schaden.
-* `href="javascript:..."` sagt nicht, wohin es geht. Wir prüfen es nicht als
-  Navigation, sonst hielte jeder gewöhnliche Schaltflächen-Link den Lauf an,
-  und vermerken es stattdessen als Hinweis.
-* Die Position 12 ist eine Stelle in einem unbenannten Tupel der Bibliothek.
-  Ändert sich dort die Reihenfolge, lesen wir das falsche Feld. Deshalb prüfen
-  wir zweierlei: die Länge des Tupels, die Einfügen und Entfernen fängt, und die
-  Form des gelesenen Werts, die ein Vertauschen fängt. Direkt neben der Adresse
-  steht der Text der Umgebung des Elements, und daraus würde sonst eine
-  plausible Adresse auf der eigenen Domain. Beides endet in einem Hinweis, nie
-  in einem stillen Durchwinken. Ein Vertragstest hält Länge und Position
-  ausserdem gegen die installierte `snapshot.js`.
-
-Wie Adressen gelesen werden
----------------------------
-Es gibt im ganzen Projekt genau eine Lesart von Adressen, und sie steht in
-`guards.py`. Dieser Modul löst deshalb nie selbst auf, sondern ruft
-`guards.resolve_url()`. Der Grund steht dort ausführlich: `urllib.parse.urljoin`
-liest den Backslash als gewöhnliches Zeichen, der Browser macht einen
-Schrägstrich daraus, und wer die erste Lesart prüft und die zweite ausführt,
-prüft die falsche Adresse.
-
-Was im Ergebnis steht, und was das über Geheimnisse heisst
-----------------------------------------------------------
-`RunResult` ist über `dataclasses.asdict()` ohne Sonderbehandlung in JSON zu
-bringen. Es entsteht aus einer festen Liste von Feldern, nie aus einem
-durchgereichten Zustand der Bibliothek. Schlüssel aus der Umgebung oder aus der
-Konfiguration stehen deshalb nicht darin.
-
-Zwei Felder tragen aber sehr wohl Inhalt, den der Auftrag hervorgebracht hat,
-und das ist Absicht:
-
-* `RunResult.goals` trägt den Auftragstext wörtlich, so wie er hereinkam.
-* `StepRecord.text` trägt jeden Wert, den der Agent in ein Feld getippt hat.
-
-`snapshot.js` Zeile 9 nimmt Felder der Art `password`, `file` und `hidden` von
-der Beobachtung aus, dort wird also nichts getippt. Ein Einmalkennwort, eine
-Kundennummer oder eine Ausweisnummer in einem gewöhnlichen Textfeld ist davon
-nicht gedeckt und steht anschliessend im Ergebnis.
-
-Bewusst wird nichts davon maskiert. Der getippte Text ist die wichtigste
-Angabe, um einen Lauf nachzuvollziehen, und das Textmodell erfindet keine
-Zugangsdaten: es kann nur tippen, was aus dem Auftrag folgt. Wer keinen
-vertraulichen Wert im Ergebnis haben will, schreibt ihn nicht in den Auftrag.
+None of this is masked, deliberately. The typed text is the most important
+detail for retracing a run, and the text model does not invent credentials: it
+can only type what follows from the task. Whoever does not want a confidential
+value in the result does not put it into the task.
 """
 
 import contextlib
@@ -115,168 +116,166 @@ __all__ = [
     "RunResult",
     "RunStatus",
     "StepRecord",
-    "eigenes_fenster",
-    "installiere_eigenes_fenster",
-    "kurzfassung",
-    "ohne_stdout",
+    "own_window",
+    "install_own_window",
+    "condense",
+    "stdout_to_stderr",
     "planned_target_url",
     "read_page",
     "run_task",
-    "sicherer_text",
+    "safe_text",
     "translate_error",
     "wait_until_idle",
 ]
 
 LIBRARY_MAX_ACTIONS = 60
-"""Die Obergrenze der Bibliothek, `jev_ultrafast.questions.MAX_STEPS`.
+"""The library's upper limit, `jev_ultrafast.questions.MAX_STEPS`.
 
-Der Wert ist hier festgeschrieben, damit dieser Modul ohne den Browser-Harness
-ladbar bleibt. Ein Vertragstest hält ihn gegen die installierte Bibliothek.
+The value is fixed here so that this module stays loadable without the browser
+harness. A contract test holds it against the installed library.
 """
 
 LIBRARY_MAX_MODEL_CALLS = LIBRARY_MAX_ACTIONS * 2
-"""Das Modellaufruf-Budget der Bibliothek, `MAX_STEPS * 2` in `agent.py`."""
+"""The library's model-call budget, `MAX_STEPS * 2` in `agent.py`."""
 
 DEFAULT_MAX_ACTIONS = 25
-"""Vorgabe für einen Lauf. Bewusst unter der Obergrenze, damit ein Aufruf nicht lange blockiert."""
+"""Default for a run. Deliberately below the upper limit, so that a call does not block for long."""
 
 DEFAULT_TIME_BUDGET_S = 120.0
-"""Vorgabe für die Wanduhrzeit eines Laufs, in Sekunden."""
+"""Default for the wall-clock time of a run, in seconds."""
 
 MAX_TIME_BUDGET_S = 900.0
-"""Obergrenze für die Wanduhrzeit. Länger wartet kein Aufrufer sinnvoll."""
+"""Upper limit for the wall-clock time. No caller sensibly waits longer."""
 
 _GUARD_ENTRY_LENGTH = 14
-"""Länge des Tupels aus `cache.guard()` in `snapshot.js`."""
+"""Length of the tuple from `cache.guard()` in `snapshot.js`."""
 
 _GUARD_HREF_INDEX = 12
-"""Position der Zieladresse in diesem Tupel."""
+"""Position of the target address in that tuple."""
 
-_MAX_HREF_LAENGE = 2048
-"""Längstes href, das noch plausibel ist. Darüber ist es kein Verweisziel."""
+_MAX_HREF_LENGTH = 2048
+"""Longest href that is still plausible. Anything longer is not a link target."""
 
-_NAVIGIERBARE_SCHEMATA = frozenset({"http", "https"})
+_NAVIGABLE_SCHEMES = frozenset({"http", "https"})
 
-_SCHEMA_ZEICHEN = "abcdefghijklmnopqrstuvwxyz0123456789+.-"
+_SCHEME_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789+.-"
 
-_MAX_STALE_JE_SCHRITT = 5
-_MAX_UEBERGANG_JE_LAUF = 5
-"""So oft beobachtet ein Lauf neu, wenn er auf einem Übergangszustand steht."""
+_MAX_STALE_PER_STEP = 5
+_MAX_TRANSITIONS_PER_RUN = 5
+"""How often a run observes again when it stands on a transitional state."""
 
-_MAX_FEHLERTEXT = 240
-_ABKLINGZEIT_S = 0.5
-"""So lange wartet der Aufrufer noch auf den Faden, wenn er selbst schon fertig ist."""
+_MAX_ERROR_TEXT = 240
+_SETTLE_TIME_S = 0.5
+"""How long the caller still waits for the thread once the caller itself is done."""
 
 LIBRARY_TEXT_LIMIT = 6000
-"""So viele Zeichen sichtbaren Text beobachtet `jev_ultrafast/snapshot.js` höchstens.
+"""The maximum number of characters of visible text `jev_ultrafast/snapshot.js` observes.
 
-Die Grenze steht dort in `words.join('\n').slice(0,6000)` und greift, bevor
-`text_limit` überhaupt etwas zu kürzen hat. Erreicht der beobachtete Text genau
-diese Länge, ist die Seite vermutlich länger, und das Ergebnis sagt es. Ein
-Vertragstest hält die Zahl gegen die installierte Datei.
+The limit sits there in `words.join('\n').slice(0,6000)` and applies before
+`text_limit` has anything to shorten. If the observed text reaches exactly this
+length, the page is probably longer, and the result says so. A contract test
+holds the number against the installed file.
 """
 
-_LAUF_SCHLOSS = threading.Lock()
-"""Nur ein Lauf gleichzeitig, siehe `run_task`."""
+_RUN_LOCK = threading.Lock()
+"""Only one run at a time, see `run_task`."""
 
-_LAUF_NUMMER = count(1)
+_RUN_NUMBER = count(1)
 
-_NACHLAUF_DECKEL_S = 120.0
-"""So lange wartet die Freigabe des Lauf-Schlosses höchstens auf den Arbeitsfaden.
+_AFTERRUN_CAP_S = 120.0
+"""The longest time the release of the run lock waits for the worker thread.
 
-Das Schloss wird erst freigegeben, wenn der Faden wirklich fertig ist, sonst
-arbeiten nach einer Zeitüberschreitung zwei Läufe im selben Browser. Der Deckel
-sorgt dafür, dass ein endgültig hängender Faden das Schloss nicht für immer
-behält.
+The lock is only released once the thread is really done, otherwise two runs
+work in the same browser after a timeout. The cap makes sure that a thread that
+hangs for good does not keep the lock forever.
 """
 
-_STDOUT_SCHLOSS = threading.Lock()
-_STDOUT_TIEFE = 0
+_STDOUT_LOCK = threading.Lock()
+_STDOUT_DEPTH = 0
 _STDOUT_ORIGINAL: object = None
 
 
 @contextlib.contextmanager
-def ohne_stdout() -> Iterator[None]:
-    """Lenkt die Standardausgabe auf stderr, solange irgendwer diesen Riegel hält.
+def stdout_to_stderr() -> Iterator[None]:
+    """Redirects standard output to stderr for as long as anyone holds this latch.
 
-    Bei stdio ist die Standardausgabe der Protokollkanal, und jedes fremde Byte
-    darin zerstört die Verbindung. Der Riegel zählt mit, wie viele ihn gerade
-    halten, und stellt die Ausgabe erst wieder her, wenn der letzte ihn loslässt.
-    Das Zählen ist nötig, weil sich zwei Halter überschneiden: der Werkzeugaufruf
-    und der Arbeitsfaden, der das Zeitbudget überlebt. Ein einfaches
-    `redirect_stdout` würde dabei in der falschen Reihenfolge zurückgelegt und
-    liesse `sys.stdout` am Ende auf stderr stehen.
+    With stdio, standard output is the protocol channel, and every stray byte in
+    it destroys the connection. The latch counts how many currently hold it and
+    only restores the output once the last one lets go. Counting is necessary
+    because two holders overlap: the tool call and the worker thread that
+    outlives the time budget. A plain `redirect_stdout` would be restored in
+    the wrong order and would leave `sys.stdout` pointing at stderr in the end.
 
-    Der Riegel ist kein vollständiger Schutz. Er fasst `sys.stdout` an, nicht den
-    Dateideskriptor 1: ein `os.write(1, ...)` oder ein Unterprozess geht daran
-    vorbei. Dass auch das nicht in der Leitung landet, liegt allein am SDK, das
-    den Deskriptor 1 während des Betriebs auf stderr legt.
+    The latch is not complete protection. It touches `sys.stdout`, not file
+    descriptor 1: an `os.write(1, ...)` or a subprocess bypasses it. That this
+    does not end up on the wire either is solely due to the SDK, which points
+    descriptor 1 at stderr while it is running.
     """
-    global _STDOUT_TIEFE, _STDOUT_ORIGINAL
-    ziel = sys.stderr
-    if ziel is None:  # Nur in Umgebungen ohne stderr.
+    global _STDOUT_DEPTH, _STDOUT_ORIGINAL
+    target = sys.stderr
+    if target is None:  # Only in environments without stderr.
         yield
         return
-    with _STDOUT_SCHLOSS:
-        if _STDOUT_TIEFE == 0:
+    with _STDOUT_LOCK:
+        if _STDOUT_DEPTH == 0:
             _STDOUT_ORIGINAL = sys.stdout
-            sys.stdout = ziel
-        _STDOUT_TIEFE += 1
+            sys.stdout = target
+        _STDOUT_DEPTH += 1
     try:
         yield
     finally:
-        with _STDOUT_SCHLOSS:
-            _STDOUT_TIEFE -= 1
-            if _STDOUT_TIEFE <= 0:
-                _STDOUT_TIEFE = 0
+        with _STDOUT_LOCK:
+            _STDOUT_DEPTH -= 1
+            if _STDOUT_DEPTH <= 0:
+                _STDOUT_DEPTH = 0
                 sys.stdout = _STDOUT_ORIGINAL  # type: ignore[assignment]
                 _STDOUT_ORIGINAL = None
 
 
 def wait_until_idle(timeout: float = 30.0) -> bool:
-    """Wartet, bis kein Lauf und kein Lesevorgang mehr in Arbeit ist.
+    """Waits until no run and no read is in progress any more.
 
-    Gedacht für Aufrufer, die wissen müssen, ob der Browser wieder frei ist,
-    etwa eine Testsuite zwischen zwei Fällen. Gibt `True` zurück, wenn das
-    Schloss innerhalb der Frist frei war.
+    Meant for callers that need to know whether the browser is free again, for
+    example a test suite between two cases. Returns `True` if the lock was free
+    within the deadline.
     """
-    if not _LAUF_SCHLOSS.acquire(timeout=timeout):
+    if not _RUN_LOCK.acquire(timeout=timeout):
         return False
-    _LAUF_SCHLOSS.release()
+    _RUN_LOCK.release()
     return True
 
 
 class RunStatus(StrEnum):
-    """Wie ein Lauf geendet hat."""
+    """How a run ended."""
 
     DONE = "done"
-    """Der Agent hat das Ziel für erreicht erklärt."""
+    """The agent declared the goal reached."""
 
     BLOCKED = "blocked"
-    """Der Agent kam selbst nicht weiter."""
+    """The agent could not get any further by itself."""
 
     PLANNED = "planned"
-    """Trockenlauf: es wurde geplant, aber nichts ausgeführt."""
+    """Dry run: something was planned, but nothing was executed."""
 
     STOPPED_DOMAIN = "stopped_domain"
-    """Die Domain-Treue hat den Lauf angehalten."""
+    """The domain lock stopped the run."""
 
     STOPPED_BUDGET = "stopped_budget"
-    """Ein Aktions- oder Modellaufruf-Budget war erschöpft."""
+    """An action or model-call budget was used up."""
 
     STOPPED_TIME = "stopped_time"
-    """Das Zeitbudget war erschöpft."""
+    """The time budget was used up."""
 
     FAILED = "failed"
-    """Der Lauf ist an einem Fehler gescheitert."""
+    """The run failed because of an error."""
 
     NOT_STARTED = "not_started"
-    """Es wurde kein Browser geöffnet, die Voraussetzungen stimmten nicht."""
+    """No browser was opened, the prerequisites were not met."""
 
 
 @dataclass(frozen=True)
 class StepRecord:
-    """Ein ausgeführter Schritt, in lesbarer Form."""
+    """An executed step, in readable form."""
 
     step: int
     action: str
@@ -292,10 +291,10 @@ class StepRecord:
 
 @dataclass(frozen=True)
 class DomainStop:
-    """Die Domain-Entscheidung, die einen Lauf angehalten hat.
+    """The domain decision that stopped a run.
 
-    Eine serialisierbare Kopie von `guards.DomainDecision`. Die Adressen darin
-    sind die bereits entschärften Kurzformen des Wächters.
+    A serializable copy of `guards.DomainDecision`. The addresses in it are the
+    guard's already defused short forms.
     """
 
     verdict: str
@@ -310,7 +309,7 @@ class DomainStop:
 
 @dataclass(frozen=True)
 class PlannedStep:
-    """Was der Agent als Nächstes täte. Ergebnis eines Trockenlaufs."""
+    """What the agent would do next. Result of a dry run."""
 
     choice: str
     action: str
@@ -324,7 +323,7 @@ class PlannedStep:
 
 @dataclass(frozen=True)
 class RunResult:
-    """Das Ergebnis eines Laufs, vollständig und ohne Geheimnisse."""
+    """The result of a run, complete and without secrets."""
 
     status: RunStatus
     ok: bool
@@ -348,331 +347,329 @@ class RunResult:
 
 
 # ---------------------------------------------------------------------------
-# Fehlerübersetzung
+# Error translation
 # ---------------------------------------------------------------------------
 
-_SCHLUESSEL_ORT = f"~{str(DEFAULT_CONFIG_PATH).replace(str(DEFAULT_CONFIG_PATH.home()), '', 1)}"
+_KEY_LOCATION = f"~{str(DEFAULT_CONFIG_PATH).replace(str(DEFAULT_CONFIG_PATH.home()), '', 1)}"
 
-_UEBERSETZUNGEN: tuple[tuple[re.Pattern[str], str], ...] = (
+_TRANSLATIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"^stopped at the \d+-action demo budget"),
-        "Die Bibliothek hat ihr eigenes Aktionsbudget ausgeschöpft und den Lauf beendet. "
-        "Formuliere das Ziel enger oder teile es in mehrere Aufrufe auf.",
+        "The library used up its own action budget and ended the run. "
+        "Narrow the goal or split it across several calls.",
     ),
     (
         re.compile(r"^reached the demo's model-call budget"),
-        "Das Budget für Modellaufrufe der Bibliothek ist erschöpft, der Lauf endet hier. "
-        "Das passiert, wenn der Agent viele Schritte verwirft, weil sich die Seite laufend ändert. "
-        "Versuche es mit einem engeren Ziel oder auf einer ruhigeren Seite erneut.",
+        "The library's budget for model calls is used up, so the run ends here. "
+        "This happens when the agent discards many steps because the page keeps changing. "
+        "Try again with a narrower goal or on a calmer page.",
     ),
     (
         re.compile(r"^this run has stopped\b"),
-        "Dieser Lauf war bereits beendet, es kann darin kein weiterer Schritt mehr ausgeführt werden. "
-        "Starte einen neuen Lauf, wenn noch etwas zu tun ist.",
+        "This run had already ended, so no further step can be carried out in it. "
+        "Start a new run if there is still something to do.",
     ),
     (
         re.compile(r"^type_text needs text_model_api_key\b"),
-        "Der nächste Schritt wäre Tippen gewesen, dafür fehlt der Schlüssel des Textmodells "
-        "(TEXT_MODEL_API_KEY). Klicken, Auswählen und Navigieren gehen weiterhin, nur Formulare und "
-        f"Suchfelder nicht. Hinterlege den Schlüssel in {_SCHLUESSEL_ORT} oder in der Umgebung, "
-        "dann kann der Agent auch tippen.",
+        "The next step would have been typing, and the key of the text model is missing for that "
+        "(TEXT_MODEL_API_KEY). Clicking, selecting and navigating still work, only forms and "
+        f"search fields do not. Store the key in {_KEY_LOCATION} or in the environment, "
+        "then the agent can type as well.",
     ),
     (
         re.compile(r"^text helper returned no valid field value\b"),
-        "Das Textmodell hat keinen brauchbaren Feldwert geliefert, es wurde deshalb nichts getippt. "
-        "Sage im Ziel genauer, was in das Feld gehört, und versuche es erneut.",
+        "The text model did not return a usable field value, so nothing was typed. "
+        "State more precisely in the goal what belongs in the field, and try again.",
     ),
     (
         re.compile(r"^invalid typesafe response\b"),
-        "Das Entscheidungsmodell hat eine Antwort geliefert, die sich nicht auswerten liess, "
-        "es wurde nichts ausgeführt. Ein erneuter Versuch hilft hier meistens.",
+        "The decision model returned a response that could not be evaluated, "
+        "so nothing was executed. Trying again usually helps here.",
     ),
     (
         re.compile(r"^model connection failed\b"),
-        "Das Entscheidungs- oder Textmodell war nicht erreichbar, es wurde nichts ausgeführt. "
-        "Prüfe die Internetverbindung und die hinterlegten Schlüssel, dann starte den Lauf neu.",
+        "The decision or text model could not be reached, so nothing was executed. "
+        "Check the internet connection and the stored keys, then start the run again.",
     ),
     (
         re.compile(r"^model provider returned http \d+"),
-        "Der Modellanbieter hat den Aufruf mit einem Fehler beantwortet, es wurde nichts ausgeführt. "
-        "Das ist meistens ein abgelaufener Schlüssel, ein leeres Guthaben oder eine Drosselung. "
-        "Prüfe das Konto beim Anbieter und versuche es danach erneut.",
+        "The model provider answered the call with an error, so nothing was executed. "
+        "This is usually an expired key, an empty balance or rate limiting. "
+        "Check the account with the provider and then try again.",
     ),
     (
         re.compile(r"^model unavailable$"),
-        "Der Modellanbieter war auch nach mehreren Versuchen nicht verfügbar, es wurde nichts ausgeführt. "
-        "Warte einen Moment und starte den Lauf danach neu.",
+        "The model provider was still unavailable after several attempts, so nothing was executed. "
+        "Wait a moment and then start the run again.",
     ),
     (
         re.compile(r"^observe and choose before acting$"),
-        "Der Lauf hat versucht zu handeln, ohne vorher eine gültige Entscheidung zu haben. "
-        "Das ist ein Fehler in der Ablaufsteuerung dieses Servers, nicht auf der Seite. "
-        "Starte den Lauf neu und melde den Fall, wenn er sich wiederholt.",
+        "The run tried to act without having a valid decision first. "
+        "This is a fault in the run control of this server, not on the page. "
+        "Start the run again and report the case if it happens again.",
     ),
     (
         re.compile(r"^supply a task$"),
-        "Es wurde kein Ziel an den Agenten übergeben. Nenne in Worten, was auf der Seite geschehen soll.",
+        "No goal was passed to the agent. Say in words what should happen on the page.",
     ),
     (
         re.compile(r"^invalid observed node$"),
-        "Der Agent wollte ein Element bedienen, das sich nicht mehr eindeutig zuordnen liess, "
-        "es wurde nichts ausgeführt. Starte den Lauf auf der Seite neu.",
+        "The agent wanted to operate an element that could no longer be identified unambiguously, "
+        "so nothing was executed. Start the run on the page again.",
     ),
     (
         re.compile(r"^target changed or is covered\b"),
-        "Das Element hat sich bewegt oder liegt unter einem anderen, der Klick wurde nicht ausgeführt. "
-        "Schliesse Einblendungen wie Cookie-Banner oder Chat-Fenster und starte den Lauf neu.",
+        "The element moved or lies beneath another one, so the click was not carried out. "
+        "Close overlays such as cookie banners or chat windows and start the run again.",
     ),
     (
         re.compile(r"^dropdown execution was (?:interrupted|not confirmed)\b"),
-        "Eine Auswahlliste liess sich nicht sicher bedienen, der Zustand des Feldes ist unklar. "
-        "Sieh im Browser nach, was dort jetzt ausgewählt ist, bevor du den Lauf wiederholst.",
+        "A dropdown list could not be operated safely, so the state of the field is unclear. "
+        "Check in the browser what is selected there now before you repeat the run.",
     ),
     (
         re.compile(r"\brequired daemon \S+ is (?:not running|unhealthy)\b|^daemon-starting\b"),
-        "Der Browser-Harness-Dienst läuft nicht oder ist nicht gesund, deshalb liess sich kein Chrome "
-        "ansprechen. Starte ihn mit `browser-harness daemon start` und versuche es erneut.",
+        "The browser-harness daemon is not running or is not healthy, so no Chrome could be "
+        "reached. Start it with `browser-harness daemon start` and try again.",
     ),
     (
         re.compile(r"\bdaemon \S+ didn't come up\b"),
-        "Der Browser-Harness-Dienst ist nicht hochgekommen, deshalb liess sich kein Chrome ansprechen. "
-        "Sieh in sein Protokoll, starte ihn neu und versuche es danach erneut.",
+        "The browser-harness daemon did not come up, so no Chrome could be reached. "
+        "Look at its log, restart it and then try again.",
     ),
     (
         re.compile(r"^permission-blocked\b|^remote debugging is turned off\b"),
-        "Chrome lässt die Fernsteuerung nicht zu, deshalb konnte der Lauf nicht beginnen. "
-        "Erlaube sie in Chrome unter chrome://inspect und bestätige die Rückfrage, dann starte den "
-        "Lauf neu.",
+        "Chrome does not allow remote control, so the run could not begin. "
+        "Allow it in Chrome under chrome://inspect and confirm the prompt, then start the "
+        "run again.",
     ),
     (
         re.compile(r"^devtoolsactiveport not found\b"),
-        "Chrome läuft ohne offene Fernsteuerung, der Lauf konnte deshalb nicht beginnen. "
-        "Schalte sie unter chrome://inspect ein und starte den Lauf danach neu.",
+        "Chrome is running without remote control switched on, so the run could not begin. "
+        "Switch it on under chrome://inspect and then start the run again.",
     ),
     (
         re.compile(r"^bu_cdp_url=\S* unreachable\b|^cdp ws handshake failed\b"),
-        "Die Verbindung zu Chrome hat nicht geantwortet, der Lauf wurde abgebrochen. "
-        "Prüfe, ob Chrome läuft und mit dem Harness verbunden ist, dann starte den Lauf neu.",
+        "The connection to Chrome did not respond, so the run was aborted. "
+        "Check that Chrome is running and connected to the harness, then start the run again.",
     ),
     (
         re.compile(r"^javascript evaluation failed\b"),
-        "Die Seite hat die Beobachtung abgewiesen, meistens weil sie gerade neu lädt. "
-        "Warte kurz und starte den Lauf danach neu.",
+        "The page rejected the observation, usually because it is reloading at that moment. "
+        "Wait a moment and then start the run again.",
     ),
     (
         re.compile(r"\btimed out waiting for\b"),
-        "Ein Aufruf hat die Zeitgrenze überschritten, es wurde nichts weiter ausgeführt. "
-        "Prüfe Netz und Browser und starte den Lauf danach neu.",
+        "A call exceeded its time limit, so nothing further was executed. "
+        "Check the network and the browser, then start the run again.",
     ),
 )
-"""Die Wortlaute der Bibliothek, jeder an seinem Satzanfang verankert.
+"""The library's wordings, each one anchored at the start of its sentence.
 
-Verankert, nicht als lose Teilzeichenkette gesucht. Vorher entschied das Wort
-`chrome` irgendwo im Text, und die Meldung "Konnte Element 'Zur
-Chrome-Erweiterung' nicht anklicken" wurde zu "Chrome war nicht ansprechbar".
-Ebenso wurde aus "Element not found: a[href='/connection-settings']" ein
-Verbindungsausfall. Passt kein Muster, sagt der Satz das ehrlich, statt eine
-falsche Ursache zu behaupten.
+Anchored, not searched for as a loose substring. Previously the word `chrome`
+anywhere in the text decided, and the message "Could not click element 'Go to
+Chrome extension'" became "Chrome could not be reached". Likewise,
+"Element not found: a[href='/connection-settings']" became a connection
+failure. If no pattern matches, the sentence says so honestly instead of
+claiming a wrong cause.
 
-Ein Vertragstest hält jedes Muster gegen das installierte `jev_ultrafast` und
-`browser_harness`. Benennt ein Update dort eine Meldung um, fällt das auf.
+A contract test holds every pattern against the installed `jev_ultrafast` and
+`browser_harness`. If an update renames a message there, it gets noticed.
 """
 
-_TYP_UEBERSETZUNGEN: tuple[tuple[type[BaseException], str], ...] = (
+_TYPE_TRANSLATIONS: tuple[tuple[type[BaseException], str], ...] = (
     (
         TimeoutError,
-        "Ein Aufruf hat die Zeitgrenze überschritten, es wurde nichts weiter ausgeführt. "
-        "Prüfe Netz und Browser und starte den Lauf danach neu.",
+        "A call exceeded its time limit, so nothing further was executed. "
+        "Check the network and the browser, then start the run again.",
     ),
     (
         ConnectionError,
-        "Eine Verbindung ist ausgefallen, der Lauf wurde abgebrochen. "
-        "Prüfe Netz und Browser und starte den Lauf danach neu.",
+        "A connection dropped, so the run was aborted. "
+        "Check the network and the browser, then start the run again.",
     ),
 )
-"""Fälle, die sich am Typ der Ausnahme sicherer erkennen lassen als am Text."""
+"""Cases that can be recognized more reliably by the type of the exception than by its text."""
 
 
-def kurzfassung(text: str) -> str:
-    """Eine einzeilige, gekürzte Fassung eines fremden Fehlertexts."""
-    sauber = " ".join(str(text).split())
-    return sauber[: _MAX_FEHLERTEXT - 1] + "…" if len(sauber) > _MAX_FEHLERTEXT else sauber
+def condense(text: str) -> str:
+    """A single-line, shortened version of a foreign error text."""
+    cleaned = " ".join(str(text).split())
+    return cleaned[: _MAX_ERROR_TEXT - 1] + "…" if len(cleaned) > _MAX_ERROR_TEXT else cleaned
 
 
 def translate_error(error: BaseException) -> str:
-    """Übersetzt eine Ausnahme der Bibliothek in einen ganzen deutschen Satz.
+    """Translates an exception of the library into a complete sentence.
 
-    Der Satz sagt, was passiert ist, und was der Nutzer tun kann. Passt nichts,
-    kommt der ursprüngliche Text gekürzt und einzeilig mit, damit nichts
-    verschwindet, was beim Suchen hilft.
+    The sentence says what happened and what the user can do. If nothing
+    matches, the original text comes along, shortened and on one line, so that
+    nothing that helps with searching disappears.
     """
     text = " ".join(str(error).split()).lower()
-    for muster, satz in _UEBERSETZUNGEN:
-        if muster.search(text):
-            return satz
-    for typ, satz in _TYP_UEBERSETZUNGEN:
-        if isinstance(error, typ):
-            return satz
+    for pattern, sentence in _TRANSLATIONS:
+        if pattern.search(text):
+            return sentence
+    for exc_type, sentence in _TYPE_TRANSLATIONS:
+        if isinstance(error, exc_type):
+            return sentence
     return (
-        "Der Lauf ist an einer Stelle gescheitert, die dieser Server nicht einordnen kann "
-        f"({type(error).__name__}: {kurzfassung(str(error) or 'ohne Text')}). "
-        "Starte den Lauf neu und melde den Fall, wenn er sich wiederholt."
+        "The run failed at a point that this server cannot classify "
+        f"({type(error).__name__}: {condense(str(error) or 'no message')}). "
+        "Start the run again and report the case if it happens again."
     )
 
 
-def _budgetart(stand: "_Stand", auftrag: "_Auftrag") -> str | None:
-    """Sagt aus den **eigenen** Zählern, ob ein Budget erschöpft war.
+def _exhausted_budget(state: "_ProgressState", task: "_Task") -> str | None:
+    """Says from this module's **own** counters whether a budget was used up.
 
-    Bewusst nicht aus dem Fehlertext der Bibliothek. Der Status eines Laufs darf
-    nicht davon abhängen, wie eine fremde Meldung gerade formuliert ist: eine
-    harmlose Umbenennung von "demo budget" zu "step budget" liess den Status
-    vorher von `stopped_budget` auf `failed` kippen, ohne dass sich am Lauf
-    etwas geändert hätte. Gezählt wird, was dieser Modul ohnehin mitführt: die
-    ausgeführten Schritte und die Entscheidungen des Modells.
+    Deliberately not from the library's error text. The status of a run must
+    not depend on how a foreign message happens to be worded: a harmless rename
+    from "demo budget" to "step budget" previously flipped the status from
+    `stopped_budget` to `failed` without anything about the run having changed.
+    What is counted is what this module keeps track of anyway: the executed
+    steps and the decisions of the model.
     """
-    if len(stand.steps) >= min(auftrag.max_actions, LIBRARY_MAX_ACTIONS):
+    if len(state.steps) >= min(task.max_actions, LIBRARY_MAX_ACTIONS):
         return "actions"
-    if stand.model_calls >= LIBRARY_MAX_MODEL_CALLS:
+    if state.model_calls >= LIBRARY_MAX_MODEL_CALLS:
         return "model_calls"
     return None
 
 
-def _ist_veraltete_seite(error: BaseException) -> bool:
-    """True für `jev_ultrafast.browser.StalePage`, ohne die Bibliothek zu importieren.
+def _is_stale_page(error: BaseException) -> bool:
+    """True for `jev_ultrafast.browser.StalePage`, without importing the library.
 
-    Erkannt wird am Klassennamen in der Ableitungskette. Das hält diesen Modul
-    frei von einem Import, der den Browser-Harness mitzieht, und lässt Tests
-    einen eigenen Doppelgänger derselben Bezeichnung verwenden.
+    It is recognized by the class name in the inheritance chain. That keeps this
+    module free of an import that pulls in the browser harness, and it lets
+    tests use their own double with the same name.
     """
-    return any(klasse.__name__ == "StalePage" for klasse in type(error).__mro__)
+    return any(klass.__name__ == "StalePage" for klass in type(error).__mro__)
 
 
 # ---------------------------------------------------------------------------
-# Die Zieladresse vor dem Klick
+# The target address before the click
 # ---------------------------------------------------------------------------
 
 
-def _schema(adresse: str) -> str:
-    """Das Schema einer Adresse, kleingeschrieben, oder ein leerer Text."""
-    kopf, trenner, _ = adresse.partition(":")
-    if not trenner or not kopf:
+def _scheme_of(address: str) -> str:
+    """The scheme of an address, in lower case, or an empty text."""
+    head, separator, _ = address.partition(":")
+    if not separator or not head:
         return ""
-    klein = kopf.lower()
-    if not klein[0].isalpha() or any(zeichen not in _SCHEMA_ZEICHEN for zeichen in klein):
+    lowered = head.lower()
+    if not lowered[0].isalpha() or any(char not in _SCHEME_CHARS for char in lowered):
         return ""
-    return klein
+    return lowered
 
 
-_KEIN_ZIEL_HINWEIS = (
-    "Für mindestens einen Klick lag vorab keine Zieladresse vor. Nur Verweise mit href liefern eine, "
-    "Schaltflächen und Formulare nicht. Die Domain-Treue greift für solche Klicks erst nach dem Laden, "
-    "und im eingeloggten Profil ist die geladene Seite bereits der Schaden."
+_NO_TARGET_NOTE = (
+    "For at least one click there was no target URL in advance. Only links with an href provide "
+    "one, buttons and forms do not. For such clicks the domain lock only applies after the load, and "
+    "in the logged-in profile the loaded page already is the damage."
 )
 
-_UEBERGANG_HINWEIS = (
-    "Der Browser stand zwischendurch auf einem Übergangszustand, der kein Ziel des Auftrags ist, etwa "
-    "about:blank oder eine Oberfläche des Browsers selbst. Das hält den Lauf nicht an, gehandelt wird "
-    "dort aber nicht: der Lauf hat stattdessen neu beobachtet und auf die nächste richtige Adresse "
-    "gewartet."
+_TRANSITION_NOTE = (
+    "In between, the browser stood on a transitional state that is not a target of the task, such as "
+    "about:blank or a page of the browser itself. That does not stop the run, but no action is taken "
+    "there: instead the run observed again and waited for the next proper URL."
 )
 
-_VERALTET_HINWEIS = (
-    "Die Seite hat sich während eines Schritts geändert, der Schritt wurde deshalb verworfen und neu "
-    "beobachtet. Das ist der vorgesehene Wiederholungsfall und kein Fehler."
+_STALE_NOTE = (
+    "The page changed during a step, so the step was discarded and the page observed again. This is "
+    "the intended retry case and not an error."
 )
 
-_UNPLAUSIBLES_ZIEL_HINWEIS = (
-    "An der Stelle der Zieladresse stand etwas, das keine Adresse sein kann, etwa ein Stück "
-    "Seitentext. Vermutlich hat sich die Reihenfolge der Felder in der Bibliothek geändert. Die "
-    "Zieladresse wurde deshalb nicht geprüft, und die Domain-Treue greift für diesen Schritt erst "
-    "nach dem Laden."
+_IMPLAUSIBLE_TARGET_NOTE = (
+    "The slot of the target URL held something that cannot be a URL, such as a piece of "
+    "page text. The order of the fields in the library has probably changed. The target URL was "
+    "therefore not checked, and for this step the domain lock only applies after the load."
 )
 
-_NICHT_AUFLOESBAR_HINWEIS = (
-    "Eine Zieladresse liess sich nicht zu einer vollständigen Adresse auflösen, sie wurde deshalb "
-    "vor dem Klick nicht geprüft. Die Domain-Treue greift für diesen Schritt erst nach dem Laden."
+_UNRESOLVABLE_NOTE = (
+    "A target URL could not be resolved to a complete URL, so it was not checked before the "
+    "click. For this step the domain lock only applies after the load."
 )
 
 
-def _plausibles_href(wert: str) -> bool:
-    """Sagt, ob ein gelesener Wert überhaupt eine Zieladresse sein kann.
+def _plausible_href(value: str) -> bool:
+    """Says whether a value read can be a target address at all.
 
-    Die Position der Adresse im Tupel der Bibliothek ist nur über die Länge
-    abgesichert, und eine Länge fängt kein Vertauschen. Direkt neben der Adresse
-    steht der Text der Umgebung des Elements. Wird beides vertauscht, entsteht
-    aus "Jetzt anmelden und Konto bestaetigen" eine scheinbar harmlose Adresse
-    auf der eigenen Domain, die anstandslos durchginge.
+    The position of the address in the library's tuple is only secured by the
+    length, and a length does not catch a swap. Right next to the address sits
+    the text surrounding the element. If the two are swapped, "Sign in now and
+    confirm your account" turns into a seemingly harmless address on the start
+    domain that would pass without objection.
 
-    Unterschieden wird deshalb nach der Form: eine Adresse trägt keinen
-    Leerraum, und sie ist nicht beliebig lang. Fliesstext trägt beides.
+    The distinction is therefore made by shape: an address carries no
+    whitespace, and it is not arbitrarily long. Running text carries both.
     """
-    if not wert or len(wert) > _MAX_HREF_LAENGE:
+    if not value or len(value) > _MAX_HREF_LENGTH:
         return False
-    return not any(zeichen.isspace() for zeichen in wert)
+    return not any(char.isspace() for char in value)
 
 
 def planned_target_url(page: Mapping, choice: str) -> tuple[str | None, str | None]:
-    """Liest die Zieladresse, die ein geplanter Klick ansteuern würde.
+    """Reads the target address a planned click would head for.
 
-    Gibt `(Adresse, Hinweis)` zurück. Die Adresse ist absolut und trägt ein
-    Schema, mit dem der Browser wirklich navigiert, sonst ist sie `None`. Der
-    Hinweis ist ein deutscher Satz für das Ergebnis, sobald es etwas zu sagen
-    gibt, sonst `None`.
+    Returns `(address, note)`. The address is absolute and carries a scheme the
+    browser really navigates with, otherwise it is `None`. The note is a
+    sentence for the result as soon as there is something to say, otherwise
+    `None`.
 
-    `None` ohne Hinweis heisst: hier ist keine Navigation zu prüfen, etwa bei
-    einem Textfeld, einem Sprung innerhalb der Seite oder `mailto:`. `None` mit
-    Hinweis heisst: es wäre etwas zu prüfen gewesen, die Bibliothek gibt es aber
-    nicht her. Siehe den Modul-Docstring, dort steht die Herkunft der Daten.
+    `None` without a note means: there is no navigation to check here, for
+    example with a text field, a jump within the page or `mailto:`. `None` with
+    a note means: there would have been something to check, but the library does
+    not provide it. See the module docstring for where the data comes from.
     """
-    aktion = next((a for a in (page.get("actions") or []) if a.get("id") == choice), None)
-    if aktion is None or aktion.get("kind") != "click":
+    action = next((a for a in (page.get("actions") or []) if a.get("id") == choice), None)
+    if action is None or action.get("kind") != "click":
         return None, None
 
-    eintrag = (page.get("guards") or {}).get(str(aktion.get("node")))
-    if eintrag is None:
-        return None, _KEIN_ZIEL_HINWEIS
-    if not isinstance(eintrag, list | tuple) or len(eintrag) != _GUARD_ENTRY_LENGTH:
+    entry = (page.get("guards") or {}).get(str(action.get("node")))
+    if entry is None:
+        return None, _NO_TARGET_NOTE
+    if not isinstance(entry, list | tuple) or len(entry) != _GUARD_ENTRY_LENGTH:
         return None, (
-            "Die Elementtabelle der Bibliothek hat eine unerwartete Form, die Zieladresse liess sich "
-            "vor dem Klick nicht ablesen. Die Domain-Treue greift für diesen Schritt erst nach dem Laden."
+            "The library's element table has an unexpected shape, so the target URL could not be "
+            "read before the click. For this step the domain lock only applies after the load."
         )
 
-    href = eintrag[_GUARD_HREF_INDEX]
+    href = entry[_GUARD_HREF_INDEX]
     if not isinstance(href, str) or not href.strip():
-        return None, _KEIN_ZIEL_HINWEIS
+        return None, _NO_TARGET_NOTE
 
-    ziel = href.strip()
-    if not _plausibles_href(ziel):
-        return None, _UNPLAUSIBLES_ZIEL_HINWEIS
-    if ziel.startswith("#"):
+    target = href.strip()
+    if not _plausible_href(target):
+        return None, _IMPLAUSIBLE_TARGET_NOTE
+    if target.startswith("#"):
         return None, None
 
-    schema = _schema(ziel)
-    if schema == "javascript":
+    url_scheme = _scheme_of(target)
+    if url_scheme == "javascript":
         return None, (
-            "Mindestens ein Klick führte auf ein Skript-Ziel (javascript:), das vorab nicht verrät, "
-            "wohin es geht. Die Domain-Treue greift für solche Klicks erst nach dem Laden."
+            "At least one click led to a script target (javascript:) that does not reveal in advance "
+            "where it goes. For such clicks the domain lock only applies after the load."
         )
-    if schema and schema not in _NAVIGIERBARE_SCHEMATA:
+    if url_scheme and url_scheme not in _NAVIGABLE_SCHEMES:
         return None, None
 
-    if schema:
-        aufgeloest: str | None = ziel
+    if url_scheme:
+        resolved: str | None = target
     else:
-        aufgeloest = resolve_url(str(page.get("url") or ""), ziel)
-    if aufgeloest is None or urlsplit(aufgeloest).scheme.lower() not in _NAVIGIERBARE_SCHEMATA:
-        return None, _NICHT_AUFLOESBAR_HINWEIS
-    return aufgeloest, None
+        resolved = resolve_url(str(page.get("url") or ""), target)
+    if resolved is None or urlsplit(resolved).scheme.lower() not in _NAVIGABLE_SCHEMES:
+        return None, _UNRESOLVABLE_NOTE
+    return resolved, None
 
 
 # ---------------------------------------------------------------------------
-# Fortschritt, der zwischen Faden und Aufrufer geteilt wird
+# Progress shared between the thread and the caller
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class _Stand:
-    """Eine Momentaufnahme des Fortschritts, gefahrlos zu lesen."""
+class _ProgressState:
+    """A snapshot of the progress, safe to read."""
 
     url: str
     title: str
@@ -682,116 +679,115 @@ class _Stand:
     duration_ms: int
 
 
-def _schritt_von(eintrag: Mapping) -> StepRecord:
-    """Baut einen Schritt aus einem Eintrag der Historie, Feld für Feld."""
+def _step_from(entry: Mapping) -> StepRecord:
+    """Builds a step from an entry of the history, field by field."""
     return StepRecord(
-        step=int(eintrag.get("step") or 0),
-        action=str(eintrag.get("action") or ""),
-        kind=str(eintrag.get("kind") or ""),
-        url=str(eintrag.get("url") or ""),
-        page_changed=eintrag.get("page_changed"),
-        text=eintrag.get("text"),
-        operation=eintrag.get("operation"),
-        target=eintrag.get("target"),
-        confidence=eintrag.get("confidence"),
-        elapsed_ms=int(eintrag.get("elapsed_ms") or 0),
+        step=int(entry.get("step") or 0),
+        action=str(entry.get("action") or ""),
+        kind=str(entry.get("kind") or ""),
+        url=str(entry.get("url") or ""),
+        page_changed=entry.get("page_changed"),
+        text=entry.get("text"),
+        operation=entry.get("operation"),
+        target=entry.get("target"),
+        confidence=entry.get("confidence"),
+        elapsed_ms=int(entry.get("elapsed_ms") or 0),
     )
 
 
-class _Fortschritt:
-    """Was bisher geschah, unter einem Schloss, weil zwei Fäden darauf sehen."""
+class _Progress:
+    """What has happened so far, under a lock, because two threads look at it."""
 
     def __init__(self, url: str, notes: Sequence[str]) -> None:
-        self._schloss = threading.Lock()
+        self._lock = threading.Lock()
         self._url = url
-        self._titel = ""
+        self._title = ""
         self._steps: tuple[StepRecord, ...] = ()
         self._model_calls = 0
         self._notes: list[str] = list(notes)
-        self._begonnen = time.monotonic()
+        self._started = time.monotonic()
 
-    def uebernimm(self, snapshot: Mapping) -> None:
-        """Liest Adresse, Titel, Historie und Modellaufrufe aus einer Momentaufnahme."""
-        seite = snapshot.get("page") or {}
-        schritte = tuple(_schritt_von(eintrag) for eintrag in (snapshot.get("history") or []))
-        aufrufe = len(snapshot.get("decisions") or [])
-        with self._schloss:
-            self._url = str(seite.get("url") or self._url)
-            self._titel = str(seite.get("title") or self._titel)
-            self._steps = schritte
-            self._model_calls = max(self._model_calls, aufrufe)
+    def adopt(self, snapshot: Mapping) -> None:
+        """Reads address, title, history and model calls from a snapshot."""
+        page = snapshot.get("page") or {}
+        steps = tuple(_step_from(entry) for entry in (snapshot.get("history") or []))
+        calls = len(snapshot.get("decisions") or [])
+        with self._lock:
+            self._url = str(page.get("url") or self._url)
+            self._title = str(page.get("title") or self._title)
+            self._steps = steps
+            self._model_calls = max(self._model_calls, calls)
 
-    def notiere(self, hinweis: str | None) -> None:
-        """Nimmt einen Hinweis auf, jeden Wortlaut nur einmal."""
-        if not hinweis:
+    def add_note(self, note: str | None) -> None:
+        """Records a note, each wording only once."""
+        if not note:
             return
-        with self._schloss:
-            if hinweis not in self._notes:
-                self._notes.append(hinweis)
+        with self._lock:
+            if note not in self._notes:
+                self._notes.append(note)
 
-    def lies(self) -> _Stand:
-        with self._schloss:
-            return _Stand(
+    def read(self) -> _ProgressState:
+        with self._lock:
+            return _ProgressState(
                 url=self._url,
-                title=self._titel,
+                title=self._title,
                 steps=self._steps,
                 model_calls=self._model_calls,
                 notes=tuple(self._notes),
-                duration_ms=round((time.monotonic() - self._begonnen) * 1000),
+                duration_ms=round((time.monotonic() - self._started) * 1000),
             )
 
 
-class _Sitzung:
-    """Hält den Agenten und schliesst ihn genau einmal, egal von welchem Faden."""
+class _Session:
+    """Holds the agent and closes it exactly once, no matter from which thread."""
 
     def __init__(self) -> None:
-        self._schloss = threading.Lock()
+        self._lock = threading.Lock()
         self._agent: object | None = None
-        self._geschlossen = False
-        self._erfolg = True
-        self._hatte_agent = False
+        self._closed = False
+        self._close_ok = True
+        self._had_agent = False
 
     @property
-    def hatte_agent(self) -> bool:
-        """True, sobald je ein Agent übergeben wurde, also je ein Tab offen war.
+    def had_agent(self) -> bool:
+        """True as soon as an agent was ever handed over, that is, as soon as a tab was ever open.
 
-        Wird ein Lauf abgebrochen, während `Agent.__init__` noch im
-        `ensure_daemon()` der Bibliothek steckt, gab es nie einen Tab. Das
-        Ergebnis darf dann nicht behaupten, es habe einen geschlossen.
+        If a run is aborted while `Agent.__init__` is still stuck in the
+        library's `ensure_daemon()`, there never was a tab. The result must then
+        not claim to have closed one.
         """
-        with self._schloss:
-            return self._hatte_agent
+        with self._lock:
+            return self._had_agent
 
-    def uebernimm(self, agent: object) -> None:
-        with self._schloss:
-            self._hatte_agent = True
-            if not self._geschlossen:
+    def adopt(self, agent: object) -> None:
+        with self._lock:
+            self._had_agent = True
+            if not self._closed:
                 self._agent = agent
                 return
-        _schliesse(agent)
+        _close_agent(agent)
 
-    def schliesse(self) -> bool:
-        """Schliesst den Agenten und sagt, ob das gelungen ist."""
-        with self._schloss:
-            if self._geschlossen:
-                return self._erfolg
-            self._geschlossen = True
+    def close(self) -> bool:
+        """Closes the agent and says whether that worked."""
+        with self._lock:
+            if self._closed:
+                return self._close_ok
+            self._closed = True
             agent = self._agent
             self._agent = None
-        erfolg = _schliesse(agent)
-        with self._schloss:
-            self._erfolg = erfolg
-        return erfolg
+        closed_ok = _close_agent(agent)
+        with self._lock:
+            self._close_ok = closed_ok
+        return closed_ok
 
 
-def _schliesse(agent: object | None) -> bool:
-    """Schliesst einen Agenten, schluckt dabei jeden Fehler und meldet den Ausgang.
+def _close_agent(agent: object | None) -> bool:
+    """Closes an agent, swallows every error while doing so and reports the outcome.
 
-    Beim Aufräumen darf nichts mehr scheitern, ein Fehler hier würde das
-    eigentliche Ergebnis des Laufs überschreiben. Verschwiegen wird er trotzdem
-    nicht: scheitert das Schliessen, bleibt der Browser-Tab offen, und der
-    Aufrufer erfährt das über den Rückgabewert und am Ende über einen Hinweis im
-    Ergebnis.
+    Nothing may fail any more during cleanup, an error here would overwrite the
+    actual result of the run. It is not kept quiet, though: if closing fails,
+    the browser tab stays open, and the caller learns about it through the
+    return value and, in the end, through a note in the result.
     """
     if agent is None:
         return True
@@ -803,13 +799,13 @@ def _schliesse(agent: object | None) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Der Auftrag
+# The task
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class _Auftrag:
-    """Die geprüften Vorgaben eines Laufs."""
+class _Task:
+    """The checked settings of a run."""
 
     start_url: str
     goals: tuple[str, ...]
@@ -820,156 +816,156 @@ class _Auftrag:
     notes: tuple[str, ...] = field(default=())
 
 
-def _ziele(goals: Sequence[str] | str | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Macht aus der Zielangabe eine Liste nicht leerer Sätze samt Hinweisen.
+def _goals(goals: Sequence[str] | str | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Turns the goal input into a list of non-empty sentences plus notes.
 
-    Ein leeres Ziel verschwand bisher stillschweigend, und aus
-    `["Suche die Seite", ""]` wurde ein Lauf mit einem Ziel, ohne dass das
-    irgendwo stand. Verworfen wird es weiterhin, aber es wird gesagt.
+    An empty goal used to disappear silently, and `["Find the page", ""]`
+    became a run with one goal without that being stated anywhere. It is still
+    discarded, but now it is said.
     """
     if goals is None:
         return (), ()
-    roh = (goals,) if isinstance(goals, str) else tuple(goals)
-    ziele = tuple(text.strip() for text in roh if isinstance(text, str) and text.strip())
-    verworfen = len(roh) - len(ziele)
-    if not verworfen:
-        return ziele, ()
-    return ziele, (
-        f"Von den angegebenen Zielen waren {verworfen} leer oder kein Satz in Worten. Sie wurden "
-        f"verworfen, gelaufen wird mit den übrigen {len(ziele)}.",
+    raw = (goals,) if isinstance(goals, str) else tuple(goals)
+    kept = tuple(text.strip() for text in raw if isinstance(text, str) and text.strip())
+    dropped = len(raw) - len(kept)
+    if not dropped:
+        return kept, ()
+    return kept, (
+        f"Of the given goals, {dropped} were empty or not a sentence in words. They were "
+        f"dropped, and the run uses the remaining {len(kept)}.",
     )
 
 
-def _als_zahl(wert: object) -> float | None:
-    """Liest eine endliche Zahl, oder `None`.
+def _as_number(value: object) -> float | None:
+    """Reads a finite number, or `None`.
 
-    `None` steht auch für `nan` und für die Unendlichkeiten. Sie sind Zahlen im
-    Sinne von `float()`, aber keine Budgets: `nan <= 0` ist falsch, also käme
-    `nan` durch jede Untergrenze, `Event.wait(nan)` kehrt sofort zurück, und
-    `nan` im Ergebnis ergibt `NaN` im JSON, was kein gültiges JSON ist. Ein
-    strenger Aufrufer lehnt eine solche Antwort ab. `json.loads` liefert genau
-    diese Werte, `{"max_actions": Infinity}` ist dafür schon genug.
+    `None` also stands for `nan` and for the infinities. They are numbers in the
+    sense of `float()`, but not budgets: `nan <= 0` is false, so `nan` would get
+    through every lower bound, `Event.wait(nan)` returns immediately, and `nan`
+    in the result becomes `NaN` in the JSON, which is not valid JSON. A strict
+    caller rejects such a response. `json.loads` produces exactly these values,
+    `{"max_actions": Infinity}` is enough for that.
 
-    `True` und `False` sind in Python ebenfalls Zahlen, und `float(True)` ist
-    eine glatte Eins. `max_actions: true` ergab dadurch kommentarlos einen Lauf
-    mit einer einzigen Aktion und `time_budget_s: true` ein Budget von einer
-    Sekunde, das danach als Zeitüberschreitung endete, ohne dass irgendwo
-    stand, warum. Ein Wahrheitswert ist deshalb hier keine Zahl.
+    `True` and `False` are numbers in Python as well, and `float(True)` is a
+    plain one. `max_actions: true` therefore silently produced a run with a
+    single action, and `time_budget_s: true` a budget of one second that then
+    ended as a timeout, without it being stated anywhere why. A boolean is
+    therefore not a number here.
     """
-    if isinstance(wert, bool):
+    if isinstance(value, bool):
         return None
     try:
-        zahl = float(wert)  # type: ignore[arg-type]
+        number = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError, OverflowError):
         return None
-    return zahl if math.isfinite(zahl) else None
+    return number if math.isfinite(number) else None
 
 
 def _budget(max_actions: object) -> tuple[int, tuple[str, ...]]:
-    """Prüft das Aktionsbudget und kappt es an der Obergrenze der Bibliothek."""
-    zahl = _als_zahl(max_actions)
-    if zahl is None:
+    """Checks the action budget and caps it at the library's upper limit."""
+    number = _as_number(max_actions)
+    if number is None:
         return DEFAULT_MAX_ACTIONS, (
-            f"Das Aktionsbudget war keine endliche Zahl, es gilt deshalb die Vorgabe von "
-            f"{DEFAULT_MAX_ACTIONS} Aktionen.",
+            f"The action budget was not a finite number, so the default of "
+            f"{DEFAULT_MAX_ACTIONS} actions applies.",
         )
-    wert = int(zahl)
-    if wert > LIBRARY_MAX_ACTIONS:
+    value = int(number)
+    if value > LIBRARY_MAX_ACTIONS:
         return LIBRARY_MAX_ACTIONS, (
-            f"Das Aktionsbudget von {wert} liegt über der Obergrenze der Bibliothek und wurde auf "
-            f"{LIBRARY_MAX_ACTIONS} Aktionen gekappt.",
+            f"The action budget of {value} is above the library's upper limit and was capped at "
+            f"{LIBRARY_MAX_ACTIONS} actions.",
         )
-    if wert < 1:
-        return 1, ("Das Aktionsbudget lag unter einer Aktion und wurde auf eine Aktion angehoben.",)
-    return wert, ()
+    if value < 1:
+        return 1, ("The action budget was below one action and was raised to one action.",)
+    return value, ()
 
 
-def _zeitbudget(time_budget_s: object) -> tuple[float, tuple[str, ...]]:
-    """Prüft das Zeitbudget und hält es zwischen einer Sekunde und der Obergrenze."""
-    wert = _als_zahl(time_budget_s)
-    if wert is None:
+def _time_budget(time_budget_s: object) -> tuple[float, tuple[str, ...]]:
+    """Checks the time budget and keeps it between one second and the upper limit."""
+    value = _as_number(time_budget_s)
+    if value is None:
         return DEFAULT_TIME_BUDGET_S, (
-            f"Das Zeitbudget war keine endliche Zahl, es gilt deshalb die Vorgabe von "
-            f"{int(DEFAULT_TIME_BUDGET_S)} Sekunden.",
+            f"The time budget was not a finite number, so the default of "
+            f"{int(DEFAULT_TIME_BUDGET_S)} seconds applies.",
         )
-    if wert <= 0:
+    if value <= 0:
         return DEFAULT_TIME_BUDGET_S, (
-            "Das Zeitbudget war nicht positiv, es gilt deshalb die Vorgabe von "
-            f"{int(DEFAULT_TIME_BUDGET_S)} Sekunden.",
+            "The time budget was not positive, so the default of "
+            f"{int(DEFAULT_TIME_BUDGET_S)} seconds applies.",
         )
-    if wert > MAX_TIME_BUDGET_S:
+    if value > MAX_TIME_BUDGET_S:
         return MAX_TIME_BUDGET_S, (
-            f"Das Zeitbudget von {wert:g} Sekunden liegt über der Obergrenze und wurde auf "
-            f"{int(MAX_TIME_BUDGET_S)} Sekunden gekappt.",
+            f"The time budget of {value:g} seconds is above the upper limit and was capped at "
+            f"{int(MAX_TIME_BUDGET_S)} seconds.",
         )
-    return wert, ()
+    return value, ()
 
 
-def _standard_agent(url: str, goals: list[str]) -> object:
-    """Baut den echten Agenten. Der Import bleibt hier, nicht auf Modulebene.
+def _default_agent(url: str, goals: list[str]) -> object:
+    """Builds the real agent. The import stays here, not at module level.
 
-    `jev_ultrafast` zieht beim Import den Browser-Harness mit. Der Runner soll
-    auch dann geladen und geprüft werden können, wenn kein Browser in der Nähe
-    ist, deshalb geschieht der Import erst, wenn wirklich ein Lauf beginnt.
+    `jev_ultrafast` pulls in the browser harness on import. The runner should be
+    loadable and checkable even when there is no browser around, so the import
+    only happens once a run really begins.
     """
-    import jev_ultrafast.browser as bibliothek_browser
+    import jev_ultrafast.browser as library_browser
     from jev_ultrafast import Agent
 
-    installiere_eigenes_fenster(bibliothek_browser)
+    install_own_window(library_browser)
     return Agent(url, goals)
 
 
-def eigenes_fenster(cdp: Callable[..., object]) -> Callable[..., object]:
-    """Legt Hintergrund-Tabs als eigenes Fenster im Hintergrund an.
+def own_window(cdp: Callable[..., object]) -> Callable[..., object]:
+    """Creates background tabs as a separate window in the background.
 
-    Die Bibliothek öffnet ihren Tab mit `background=True`, damit sie dem Nutzer
-    nicht den sichtbaren Tab wegnimmt. Chrome 153 beantwortet aber keinen
-    einzigen Befehl an einen so angelegten Tab, jeder Aufruf läuft nach fünf
-    Sekunden in die Zeitgrenze des Harness. Gemessen am 21.09.2026: derselbe Tab
-    sichtbar geöffnet antwortet sofort, und ein eigenes Fenster im Hintergrund
-    ebenfalls. Letzteres lässt das Fenster des Nutzers unberührt, deshalb wird
-    genau dieser eine Aufruf umgebogen und alles andere unverändert durchgereicht.
-    Ein ausdrücklich gesetztes `newWindow` bleibt stehen.
+    The library opens its tab with `background=True` so that it does not take
+    the visible tab away from the user. Chrome 153, however, does not answer a
+    single command to a tab created that way, every call runs into the harness
+    time limit after five seconds. Measured on 2026-09-21: the same tab opened
+    visibly answers immediately, and so does a separate window in the
+    background. The latter leaves the user's window untouched, which is why
+    exactly this one call is redirected and everything else is passed through
+    unchanged. An explicitly set `newWindow` is left as it is.
     """
 
-    def weiter(method: str, session_id: str | None = None, **params: object) -> object:
+    def forward(method: str, session_id: str | None = None, **params: object) -> object:
         if method == "Target.createTarget" and params.get("background") and "newWindow" not in params:
             params["newWindow"] = True
         return cdp(method, session_id=session_id, **params)
 
-    weiter.__jev_mcp_eigenes_fenster__ = True  # type: ignore[attr-defined]
-    return weiter
+    forward.__jev_mcp_own_window__ = True  # type: ignore[attr-defined]
+    return forward
 
 
-def installiere_eigenes_fenster(modul: object) -> None:
-    """Hängt `eigenes_fenster` genau einmal in das `cdp` eines Moduls ein."""
-    vorhanden = getattr(modul, "cdp", None)
-    if vorhanden is None or getattr(vorhanden, "__jev_mcp_eigenes_fenster__", False):
+def install_own_window(module: object) -> None:
+    """Hooks `own_window` into the `cdp` of a module exactly once."""
+    existing = getattr(module, "cdp", None)
+    if existing is None or getattr(existing, "__jev_mcp_own_window__", False):
         return
-    modul.cdp = eigenes_fenster(vorhanden)  # type: ignore[attr-defined]
+    module.cdp = own_window(existing)  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
-# Ergebnisbau
+# Building the result
 # ---------------------------------------------------------------------------
 
 
-def _domain_stop(entscheidung: DomainDecision) -> DomainStop:
+def _domain_stop(decision: DomainDecision) -> DomainStop:
     return DomainStop(
-        verdict=str(entscheidung.verdict.value),
-        reason=entscheidung.reason,
-        moment=str(entscheidung.moment.value),
-        start_domain=entscheidung.start_domain,
-        target_domain=entscheidung.target_domain,
-        target_url=entscheidung.target_url,
-        policy_note=entscheidung.policy_note,
-        warnings=tuple(entscheidung.warnings),
+        verdict=str(decision.verdict.value),
+        reason=decision.reason,
+        moment=str(decision.moment.value),
+        start_domain=decision.start_domain,
+        target_domain=decision.target_domain,
+        target_url=decision.target_url,
+        policy_note=decision.policy_note,
+        warnings=tuple(decision.warnings),
     )
 
 
-def _ergebnis(
-    auftrag: _Auftrag,
-    stand: _Stand,
+def _result(
+    task: _Task,
+    state: _ProgressState,
     status: RunStatus,
     summary: str,
     *,
@@ -983,474 +979,473 @@ def _ergebnis(
         status=status,
         ok=ok,
         summary=summary,
-        start_url=auftrag.start_url,
-        url=stand.url,
-        title=stand.title,
-        goals=auftrag.goals,
-        steps=stand.steps,
-        duration_ms=stand.duration_ms,
-        actions_used=len(stand.steps),
-        model_calls=stand.model_calls,
-        max_actions=auftrag.max_actions,
-        time_budget_s=auftrag.time_budget_s,
+        start_url=task.start_url,
+        url=state.url,
+        title=state.title,
+        goals=task.goals,
+        steps=state.steps,
+        duration_ms=state.duration_ms,
+        actions_used=len(state.steps),
+        model_calls=state.model_calls,
+        max_actions=task.max_actions,
+        time_budget_s=task.time_budget_s,
         budget_exhausted=budget_kind is not None,
         budget_kind=budget_kind,
         domain_stop=domain_stop,
         planned=planned,
-        notes=stand.notes,
+        notes=state.notes,
         error=error,
     )
 
 
-def _sekunden(stand: _Stand) -> int:
-    return max(0, round(stand.duration_ms / 1000))
+def _seconds(state: _ProgressState) -> int:
+    return max(0, round(state.duration_ms / 1000))
 
 
-def _ohne_lauf(
-    auftrag: _Auftrag,
+def _without_run(
+    task: _Task,
     status: RunStatus,
     summary: str,
     *,
     notes: Sequence[str] = (),
     domain_stop: DomainStop | None = None,
 ) -> RunResult:
-    """Ein Ergebnis für einen Lauf, der gar nicht erst begonnen hat."""
-    stand = _Stand(
-        url=auftrag.start_url,
+    """A result for a run that never began."""
+    state = _ProgressState(
+        url=task.start_url,
         title="",
         steps=(),
         model_calls=0,
-        notes=tuple(dict.fromkeys((*auftrag.notes, *notes))),
+        notes=tuple(dict.fromkeys((*task.notes, *notes))),
         duration_ms=0,
     )
-    return _ergebnis(auftrag, stand, status, summary, domain_stop=domain_stop)
+    return _result(task, state, status, summary, domain_stop=domain_stop)
 
 
 # ---------------------------------------------------------------------------
-# Der Lauf selbst
+# The run itself
 # ---------------------------------------------------------------------------
 
 
-def _trockenlauf(auftrag: _Auftrag, wache: RunGuard, fortschritt: _Fortschritt, agent: object) -> RunResult:
-    """Beobachtet und holt die erste Entscheidung ein, ohne sie auszuführen.
+def _dry_run(task: _Task, guard: RunGuard, progress: _Progress, agent: object) -> RunResult:
+    """Observes and obtains the first decision without executing it.
 
-    Der Trockenlauf steht an der Stelle, an der sonst eine Rückfrage beim
-    Menschen stünde. Also muss er auch sagen, was die Rückfrage sagen würde:
-    ob der geplante Schritt den Auftrag verlässt. Sonst liest ein Modell
-    `ok: true` und startet danach den echten Lauf.
+    The dry run stands where a confirmation prompt to the human would otherwise
+    be. So it must also say what the prompt would say: whether the planned step
+    leaves the domain this run is bound to. Otherwise a model reads `ok: true` and then starts the real
+    run.
     """
-    momentaufnahme = agent.command("predict")  # type: ignore[attr-defined]
-    fortschritt.uebernimm(momentaufnahme)
-    entscheidung = momentaufnahme.get("decision") or {}
-    auswahl = str(entscheidung.get("choice") or "")
-    seite = momentaufnahme.get("page") or {}
-    aktion = next((a for a in (seite.get("actions") or []) if a.get("id") == auswahl), None)
-    ziel, hinweis = planned_target_url(seite, auswahl)
-    fortschritt.notiere(hinweis)
+    snapshot = agent.command("predict")  # type: ignore[attr-defined]
+    progress.adopt(snapshot)
+    decision = snapshot.get("decision") or {}
+    choice = str(decision.get("choice") or "")
+    page = snapshot.get("page") or {}
+    action = next((a for a in (page.get("actions") or []) if a.get("id") == choice), None)
+    target, note = planned_target_url(page, choice)
+    progress.add_note(note)
 
-    geplant = PlannedStep(
-        choice=auswahl,
-        action=str((aktion or {}).get("label") or auswahl),
-        kind=str((aktion or {}).get("kind") or ""),
-        operation=entscheidung.get("operation"),
-        target=entscheidung.get("target"),
-        confidence=entscheidung.get("confidence"),
-        target_url=ziel,
-        will_type=(aktion or {}).get("kind") == "fill",
+    planned = PlannedStep(
+        choice=choice,
+        action=str((action or {}).get("label") or choice),
+        kind=str((action or {}).get("kind") or ""),
+        operation=decision.get("operation"),
+        target=decision.get("target"),
+        confidence=decision.get("confidence"),
+        target_url=target,
+        will_type=(action or {}).get("kind") == "fill",
     )
 
-    if ziel is not None:
-        vorher = wache.check(ziel, Moment.BEFORE)
-        if not vorher.allowed:
-            fortschritt.notiere(vorher.policy_note)
-            for warnung in vorher.warnings:
-                fortschritt.notiere(warnung)
-            satz = (
-                "Der Trockenlauf hat nichts ausgeführt, und dieser Schritt würde auch im echten Lauf "
-                f"nicht ausgeführt: er verlässt den Auftrag. {vorher.reason}"
+    if target is not None:
+        before_check = guard.check(target, Moment.BEFORE)
+        if not before_check.allowed:
+            progress.add_note(before_check.policy_note)
+            for warning in before_check.warnings:
+                progress.add_note(warning)
+            sentence = (
+                "The dry run executed nothing, and this step would not be executed in the real run "
+                f"either: it would leave the domain this run is bound to. {before_check.reason}"
             )
-            return _ergebnis(
-                auftrag,
-                fortschritt.lies(),
+            return _result(
+                task,
+                progress.read(),
                 RunStatus.STOPPED_DOMAIN,
-                satz,
-                planned=geplant,
-                domain_stop=_domain_stop(vorher),
+                sentence,
+                planned=planned,
+                domain_stop=_domain_stop(before_check),
             )
 
-    stand = fortschritt.lies()
-    if auswahl == "DONE":
-        satz = "Der Trockenlauf ergibt, dass auf dieser Seite nichts mehr zu tun ist."
-    elif auswahl == "BLOCKED":
-        satz = "Der Trockenlauf ergibt, dass der Agent hier nicht weiterkäme."
+    state = progress.read()
+    if choice == "DONE":
+        sentence = "The dry run shows that there is nothing left to do on this page."
+    elif choice == "BLOCKED":
+        sentence = "The dry run shows that the agent would not get any further here."
     else:
-        satz = (
-            f"Der Trockenlauf ergibt als nächsten Schritt: {geplant.operation or geplant.kind} auf "
-            f"«{geplant.action}»"
-            + (f", Ziel {ziel}." if ziel else ". Eine Zieladresse liegt dafür nicht vor.")
+        # The label is page text. A double quote in it would end the quoting early
+        # in a sentence the model reads, so it becomes a single quote.
+        label = planned.action.replace('"', "'")
+        sentence = f'The dry run shows as the next step: {planned.operation or planned.kind} on "{label}"' + (
+            f", target {target}." if target else ". There is no target URL for it."
         )
-    return _ergebnis(auftrag, stand, RunStatus.PLANNED, satz, ok=True, planned=geplant)
+    return _result(task, state, RunStatus.PLANNED, sentence, ok=True, planned=planned)
 
 
-def _neu_beobachten(
-    auftrag: _Auftrag, wache: RunGuard, fortschritt: _Fortschritt, agent: object
+def _observe_again(
+    task: _Task, guard: RunGuard, progress: _Progress, agent: object
 ) -> tuple[Mapping | None, DomainDecision | None, RunResult | None]:
-    """Beobachtet neu und prüft sofort, wo der Browser dabei steht.
+    """Observes again and immediately checks where the browser stands.
 
-    Ein Grund, neu zu beobachten, ist immer ein Grund zu prüfen. "Die Seite hat
-    gewechselt" ist genau der Fall, für den die Domain-Treue da ist, und ein
-    leerer Übergangszustand ist genau der Fall, in dem nicht gehandelt wird.
+    A reason to observe again is always a reason to check. "The page has
+    changed" is exactly the case the domain lock exists for, and an empty
+    transitional state is exactly the case in which no action is taken.
 
-    Gibt `(Momentaufnahme, Entscheidung, None)` zurück, oder
-    `(None, None, Ergebnis)`, wenn der Lauf hier endet.
+    Returns `(snapshot, decision, None)`, or `(None, None, result)` if the run
+    ends here.
     """
     try:
-        momentaufnahme = agent.snapshot()  # type: ignore[attr-defined]
-    except Exception as fehler:
-        return None, None, _gescheitert(auftrag, fortschritt, fehler)
-    fortschritt.uebernimm(momentaufnahme)
-    entscheidung = wache.check(fortschritt.lies().url, Moment.AFTER)
-    if not entscheidung.allowed:
-        return None, None, _angehalten(auftrag, fortschritt, entscheidung)
-    return momentaufnahme, entscheidung, None
+        snapshot = agent.snapshot()  # type: ignore[attr-defined]
+    except Exception as exc:
+        return None, None, _failed(task, progress, exc)
+    progress.adopt(snapshot)
+    decision = guard.check(progress.read().url, Moment.AFTER)
+    if not decision.allowed:
+        return None, None, _stopped(task, progress, decision)
+    return snapshot, decision, None
 
 
-def _schleife(
-    auftrag: _Auftrag,
-    wache: RunGuard,
-    fortschritt: _Fortschritt,
+def _loop(
+    task: _Task,
+    guard: RunGuard,
+    progress: _Progress,
     agent: object,
-    abbruch: threading.Event,
+    cancel: threading.Event,
 ) -> RunResult:
-    """Der eigentliche Ablauf: beobachten, prüfen, entscheiden, prüfen, handeln, prüfen.
+    """The actual flow: observe, check, decide, check, act, check.
 
-    Geprüft wird nach **jeder** Beobachtung, auch nach den beiden, die auf eine
-    veraltete Seite folgen, und auch nach der, die in `predict` steckt. Jede
-    davon kann den Browser woanders angetroffen haben, und nur die Prüfung nach
-    dem Laden sieht das.
+    A check follows **every** observation, including the two that follow a
+    stale page, and including the one inside `predict`. Each of them may have
+    found the browser somewhere else, and only the check after the load sees
+    that.
     """
-    momentaufnahme = agent.snapshot()  # type: ignore[attr-defined]
-    fortschritt.uebernimm(momentaufnahme)
+    snapshot = agent.snapshot()  # type: ignore[attr-defined]
+    progress.adopt(snapshot)
 
-    stehen = wache.check(fortschritt.lies().url, Moment.AFTER)
-    if not stehen.allowed:
-        return _angehalten(auftrag, fortschritt, stehen)
+    location_check = guard.check(progress.read().url, Moment.AFTER)
+    if not location_check.allowed:
+        return _stopped(task, progress, location_check)
 
-    if auftrag.dry_run:
-        if not stehen.may_interact:
-            fortschritt.notiere(_UEBERGANG_HINWEIS)
-        return _trockenlauf(auftrag, wache, fortschritt, agent)
+    if task.dry_run:
+        if not location_check.may_interact:
+            progress.add_note(_TRANSITION_NOTE)
+        return _dry_run(task, guard, progress, agent)
 
-    veraltet = 0
-    uebergaenge = 0
-    while not abbruch.is_set():
-        stand = fortschritt.lies()
-        if str(momentaufnahme.get("status") or "") in {"done", "blocked"}:
-            return _beendet(auftrag, stand, str(momentaufnahme["status"]))
-        if len(stand.steps) >= auftrag.max_actions:
-            return _budget_erschoepft(auftrag, stand)
+    stale_count = 0
+    transitions = 0
+    while not cancel.is_set():
+        state = progress.read()
+        if str(snapshot.get("status") or "") in {"done", "blocked"}:
+            return _ended(task, state, str(snapshot["status"]))
+        if len(state.steps) >= task.max_actions:
+            return _budget_used_up(task, state)
 
-        if not stehen.may_interact:
-            # NEUTRAL ist ausdrücklich keine Freigabe zum Handeln, und das sind
-            # nicht nur leere Seiten: chrome:// und devtools:// sind bedienbare
-            # Oberflächen. Also wird hier nicht geklickt, sondern neu beobachtet.
-            fortschritt.notiere(_UEBERGANG_HINWEIS)
-            uebergaenge += 1
-            if uebergaenge > _MAX_UEBERGANG_JE_LAUF:
-                return _uebergang_erschoepft(auftrag, fortschritt.lies())
-            momentaufnahme, stehen, ende = _neu_beobachten(auftrag, wache, fortschritt, agent)
-            if ende is not None:
-                return ende
+        if not location_check.may_interact:
+            # NEUTRAL is explicitly not a permission to act, and that does not
+            # only mean empty pages: chrome:// and devtools:// are operable
+            # interfaces. So there is no click here, the page is observed again.
+            progress.add_note(_TRANSITION_NOTE)
+            transitions += 1
+            if transitions > _MAX_TRANSITIONS_PER_RUN:
+                return _transitions_used_up(task, progress.read())
+            snapshot, location_check, end_result = _observe_again(task, guard, progress, agent)
+            if end_result is not None:
+                return end_result
             continue
 
         try:
-            momentaufnahme = agent.command("predict")  # type: ignore[attr-defined]
-        except Exception as fehler:
-            if _ist_veraltete_seite(fehler) and veraltet < _MAX_STALE_JE_SCHRITT:
-                veraltet += 1
-                fortschritt.notiere(_VERALTET_HINWEIS)
-                momentaufnahme, stehen, ende = _neu_beobachten(auftrag, wache, fortschritt, agent)
-                if ende is not None:
-                    return ende
+            snapshot = agent.command("predict")  # type: ignore[attr-defined]
+        except Exception as exc:
+            if _is_stale_page(exc) and stale_count < _MAX_STALE_PER_STEP:
+                stale_count += 1
+                progress.add_note(_STALE_NOTE)
+                snapshot, location_check, end_result = _observe_again(task, guard, progress, agent)
+                if end_result is not None:
+                    return end_result
                 continue
-            return _gescheitert(auftrag, fortschritt, fehler)
-        fortschritt.uebernimm(momentaufnahme)
+            return _failed(task, progress, exc)
+        progress.adopt(snapshot)
 
-        # `predict` beobachtet die Seite in der Bibliothek neu. Ein Tippen, ein
-        # Auswählen oder ein Klick auf eine Schaltfläche ohne href liefe sonst
-        # auf einer Seite, die inzwischen woanders steht.
-        stehen = wache.check(fortschritt.lies().url, Moment.AFTER)
-        if not stehen.allowed:
-            return _angehalten(auftrag, fortschritt, stehen)
-        if not stehen.may_interact:
+        # `predict` observes the page again inside the library. Otherwise a
+        # typing step, a selection or a click on a button without href would run
+        # on a page that is meanwhile somewhere else.
+        location_check = guard.check(progress.read().url, Moment.AFTER)
+        if not location_check.allowed:
+            return _stopped(task, progress, location_check)
+        if not location_check.may_interact:
             continue
 
-        seite = momentaufnahme.get("page") or {}
-        auswahl = str((momentaufnahme.get("decision") or {}).get("choice") or "")
-        ziel, hinweis = planned_target_url(seite, auswahl)
-        fortschritt.notiere(hinweis)
-        if ziel is not None:
-            vorher = wache.check(ziel, Moment.BEFORE)
-            if not vorher.allowed:
-                return _angehalten(auftrag, fortschritt, vorher)
+        page = snapshot.get("page") or {}
+        choice = str((snapshot.get("decision") or {}).get("choice") or "")
+        target, note = planned_target_url(page, choice)
+        progress.add_note(note)
+        if target is not None:
+            before_check = guard.check(target, Moment.BEFORE)
+            if not before_check.allowed:
+                return _stopped(task, progress, before_check)
 
-        if abbruch.is_set():
-            # Das Zeitbudget ist zwischen Beobachten und Handeln abgelaufen. Ein
-            # abgelaufener Lauf handelt nicht mehr, und er verlässt sich dafür
-            # auch nicht darauf, dass der Browser den Aufruf schon abweisen wird.
+        if cancel.is_set():
+            # The time budget ran out between observing and acting. A run whose
+            # time is up does not act any more, and it does not rely on the
+            # browser rejecting the call anyway.
             break
 
         try:
-            momentaufnahme = agent.command("act", {"fingerprint": seite.get("fingerprint")})  # type: ignore[attr-defined]
-        except Exception as fehler:
-            if _ist_veraltete_seite(fehler) and veraltet < _MAX_STALE_JE_SCHRITT:
-                veraltet += 1
-                fortschritt.notiere(_VERALTET_HINWEIS)
-                momentaufnahme, stehen, ende = _neu_beobachten(auftrag, wache, fortschritt, agent)
-                if ende is not None:
-                    return ende
+            snapshot = agent.command("act", {"fingerprint": page.get("fingerprint")})  # type: ignore[attr-defined]
+        except Exception as exc:
+            if _is_stale_page(exc) and stale_count < _MAX_STALE_PER_STEP:
+                stale_count += 1
+                progress.add_note(_STALE_NOTE)
+                snapshot, location_check, end_result = _observe_again(task, guard, progress, agent)
+                if end_result is not None:
+                    return end_result
                 continue
-            return _gescheitert(auftrag, fortschritt, fehler)
-        fortschritt.uebernimm(momentaufnahme)
-        veraltet = 0
+            return _failed(task, progress, exc)
+        progress.adopt(snapshot)
+        stale_count = 0
 
-        stehen = wache.check(fortschritt.lies().url, Moment.AFTER)
-        if not stehen.allowed:
-            return _angehalten(auftrag, fortschritt, stehen)
+        location_check = guard.check(progress.read().url, Moment.AFTER)
+        if not location_check.allowed:
+            return _stopped(task, progress, location_check)
 
-    return _zeit_erschoepft(auftrag, fortschritt.lies())
+    return _time_used_up(task, progress.read())
 
 
-def _beendet(auftrag: _Auftrag, stand: _Stand, status: str) -> RunResult:
+def _ended(task: _Task, state: _ProgressState, status: str) -> RunResult:
     if status == "done":
-        satz = (
-            f"Der Agent hat das Ziel erreicht: {len(stand.steps)} Aktionen in {_sekunden(stand)} Sekunden, "
-            f"zuletzt auf {stand.url}."
+        sentence = (
+            f"The agent reached the goal: {len(state.steps)} actions in {_seconds(state)} seconds, "
+            f"last on {state.url}."
         )
-        return _ergebnis(auftrag, stand, RunStatus.DONE, satz, ok=True)
-    satz = (
-        f"Der Agent kam nicht weiter und hat den Lauf nach {len(stand.steps)} Aktionen selbst beendet, "
-        f"zuletzt auf {stand.url}."
+        return _result(task, state, RunStatus.DONE, sentence, ok=True)
+    sentence = (
+        f"The agent could not get any further and ended the run itself after {len(state.steps)} "
+        f"actions, last on {state.url}."
     )
-    return _ergebnis(auftrag, stand, RunStatus.BLOCKED, satz)
+    return _result(task, state, RunStatus.BLOCKED, sentence)
 
 
-def _budget_erschoepft(auftrag: _Auftrag, stand: _Stand) -> RunResult:
-    satz = (
-        f"Der Lauf wurde beim Aktionsbudget von {auftrag.max_actions} Aktionen angehalten, zuletzt auf "
-        f"{stand.url}. Erhöhe das Budget oder teile das Ziel in kleinere Aufträge."
+def _budget_used_up(task: _Task, state: _ProgressState) -> RunResult:
+    sentence = (
+        f"The run was stopped at the action budget of {task.max_actions} actions, last on "
+        f"{state.url}. Raise the budget or split the goal into smaller tasks."
     )
-    return _ergebnis(auftrag, stand, RunStatus.STOPPED_BUDGET, satz, budget_kind="actions")
+    return _result(task, state, RunStatus.STOPPED_BUDGET, sentence, budget_kind="actions")
 
 
-def _uebergang_erschoepft(auftrag: _Auftrag, stand: _Stand) -> RunResult:
-    satz = (
-        f"Der Browser blieb auf einem Zustand stehen, auf dem nicht gehandelt wird, zuletzt auf "
-        f"{stand.url}. Nach {_MAX_UEBERGANG_JE_LAUF} neuen Beobachtungen hat der Lauf aufgegeben, "
-        "statt dort zu klicken. Sieh im Browser nach, was die Seite gerade tut, und starte den Lauf "
-        "danach neu."
+def _transitions_used_up(task: _Task, state: _ProgressState) -> RunResult:
+    sentence = (
+        f"The browser stayed on a state on which no action is taken, last on "
+        f"{state.url}. After {_MAX_TRANSITIONS_PER_RUN} new observations the run gave up "
+        "instead of clicking there. Check in the browser what the page is doing right now, and "
+        "then start the run again."
     )
-    return _ergebnis(auftrag, stand, RunStatus.BLOCKED, satz)
+    return _result(task, state, RunStatus.BLOCKED, sentence)
 
 
-TAB_GESCHLOSSEN = "Der Browser-Tab wurde geschlossen."
-TAB_OFFEN = "Der Browser-Tab liess sich nicht schliessen und ist vermutlich noch offen."
-TAB_NIE_OFFEN = (
-    "Es war noch kein Browser-Tab offen, den man hätte schliessen können: der Lauf steckte noch im "
-    "Aufbau. Öffnet er im Hintergrund doch noch einen, wird er sofort wieder geschlossen."
+TAB_CLOSED = "The browser tab was closed."
+TAB_OPEN = "The browser tab could not be closed and is probably still open."
+TAB_NEVER_OPEN = (
+    "No browser tab was open yet that could have been closed: the run was still being set up. "
+    "If it does open one in the background after all, that tab is closed again immediately."
 )
 
 
-def _schlusssatz(sitzung: "_Sitzung", erfolg: bool) -> str:
-    """Sagt über den Browser-Tab nur das, was wirklich zutrifft."""
-    if not sitzung.hatte_agent:
-        return TAB_NIE_OFFEN
-    return TAB_GESCHLOSSEN if erfolg else TAB_OFFEN
+def _tab_sentence(session: "_Session", closed_ok: bool) -> str:
+    """Says about the browser tab only what is really true."""
+    if not session.had_agent:
+        return TAB_NEVER_OPEN
+    return TAB_CLOSED if closed_ok else TAB_OPEN
 
 
-def _zeit_erschoepft(auftrag: _Auftrag, stand: _Stand, *, schluss: str = TAB_GESCHLOSSEN) -> RunResult:
-    satz = (
-        f"Der Lauf wurde nach dem Zeitbudget von {auftrag.time_budget_s:g} Sekunden abgebrochen, zuletzt "
-        f"auf {stand.url}, nach {len(stand.steps)} Aktionen. {schluss}"
+def _time_used_up(task: _Task, state: _ProgressState, *, tab_note: str = TAB_CLOSED) -> RunResult:
+    sentence = (
+        f"The run was aborted after the time budget of {task.time_budget_s:g} seconds, last "
+        f"on {state.url}, after {len(state.steps)} actions. {tab_note}"
     )
-    return _ergebnis(auftrag, stand, RunStatus.STOPPED_TIME, satz, budget_kind="time")
+    return _result(task, state, RunStatus.STOPPED_TIME, sentence, budget_kind="time")
 
 
-def _ohne_fremde_seite(stand: _Stand, entscheidung: DomainDecision) -> _Stand:
-    """Nimmt alles aus dem Fortschritt, was von der fremden Seite stammt.
+def _without_foreign_page(state: _ProgressState, decision: DomainDecision) -> _ProgressState:
+    """Removes everything from the progress that comes from the foreign page.
 
-    Beim Anhalten nach dem Laden hat `_neu_beobachten()` den Fortschritt bereits
-    mit der fremden Seite gefüllt, und zwar bevor geprüft wurde. Titel und
-    Adresse der fremden Seite stünden danach roh und unbegrenzt im Ergebnis,
-    obwohl die Werkzeugbeschreibung zusagt, dass von dort nichts zurückkommt.
-    Ein Titel ist beliebiger Text: eine Anweisung an das Modell, Steuerzeichen,
-    eine Richtungsumkehr, beliebige Länge.
+    When stopping after the load, `_observe_again()` has already filled the
+    progress with the foreign page, and it did so before the check. Title and
+    address of the foreign page would then be in the result raw and unbounded,
+    although the tool description promises that nothing comes back from there.
+    A title is arbitrary text: an instruction to the model, control characters,
+    a direction override, any length.
 
-    Der Titel fällt deshalb ganz weg, und als Adresse steht die bereits
-    entschärfte Kurzform aus der Entscheidung da, dieselbe, die auch in
-    `domain_stop.target_url` steht. Der letzte Schritt trägt dieselbe Adresse,
-    wenn er auf ihr geendet ist.
+    The title is therefore dropped entirely, and the address shown is the
+    already defused short form from the decision, the same one that is in
+    `domain_stop.target_url`. The last step carries the same address if it
+    ended on it.
     """
-    fremd = stand.url
-    schritte = stand.steps
-    if schritte and schritte[-1].url == fremd:
-        schritte = (*schritte[:-1], replace(schritte[-1], url=entscheidung.target_url))
-    return replace(stand, url=entscheidung.target_url, title="", steps=schritte)
+    foreign_url = state.url
+    steps = state.steps
+    if steps and steps[-1].url == foreign_url:
+        steps = (*steps[:-1], replace(steps[-1], url=decision.target_url))
+    return replace(state, url=decision.target_url, title="", steps=steps)
 
 
-def _angehalten(auftrag: _Auftrag, fortschritt: _Fortschritt, entscheidung: DomainDecision) -> RunResult:
-    fortschritt.notiere(entscheidung.policy_note)
-    for warnung in entscheidung.warnings:
-        fortschritt.notiere(warnung)
-    stand = fortschritt.lies()
-    if entscheidung.moment is Moment.AFTER:
-        # Vor dem Klick steht der Browser noch auf der erlaubten Seite, dort gibt
-        # es nichts zu entschärfen. Nach dem Laden steht er auf der fremden.
-        stand = _ohne_fremde_seite(stand, entscheidung)
-    wann = "vor dem Klick" if entscheidung.moment is Moment.BEFORE else "nach dem Laden"
-    satz = f"Der Lauf wurde {wann} von der Domain-Treue angehalten. {entscheidung.reason}"
-    return _ergebnis(auftrag, stand, RunStatus.STOPPED_DOMAIN, satz, domain_stop=_domain_stop(entscheidung))
+def _stopped(task: _Task, progress: _Progress, decision: DomainDecision) -> RunResult:
+    progress.add_note(decision.policy_note)
+    for warning in decision.warnings:
+        progress.add_note(warning)
+    state = progress.read()
+    if decision.moment is Moment.AFTER:
+        # Before the click the browser still stands on the permitted page, there
+        # is nothing to defuse there. After the load it stands on the foreign one.
+        state = _without_foreign_page(state, decision)
+    when = "before the click" if decision.moment is Moment.BEFORE else "after the load"
+    sentence = f"The run was stopped {when} by the domain lock. {decision.reason}"
+    return _result(task, state, RunStatus.STOPPED_DOMAIN, sentence, domain_stop=_domain_stop(decision))
 
 
-def _gescheitert(auftrag: _Auftrag, fortschritt: _Fortschritt, fehler: BaseException) -> RunResult:
-    stand = fortschritt.lies()
-    satz = translate_error(fehler)
-    art = _budgetart(stand, auftrag)
-    status = RunStatus.STOPPED_BUDGET if art else RunStatus.FAILED
-    return _ergebnis(auftrag, stand, status, satz, budget_kind=art, error=satz)
+def _failed(task: _Task, progress: _Progress, exc: BaseException) -> RunResult:
+    state = progress.read()
+    sentence = translate_error(exc)
+    budget_kind = _exhausted_budget(state, task)
+    status = RunStatus.STOPPED_BUDGET if budget_kind else RunStatus.FAILED
+    return _result(task, state, status, sentence, budget_kind=budget_kind, error=sentence)
 
 
-_OHNE_ERGEBNIS_HINWEIS = (
-    "Der Lauf hat sich beendet, ohne ein Ergebnis abzulegen. Auch sein eigener Fehlerzweig ist "
-    "gescheitert, die Ursache steht deshalb nur im Protokoll auf stderr. Eine Zeitüberschreitung "
-    "war es nicht. Starte den Lauf neu und melde den Fall, wenn er sich wiederholt."
+_NO_RESULT_NOTE = (
+    "The run ended without leaving a result. Its own error branch failed as well, so the cause is "
+    "only in the log on stderr. It was not a timeout. Start the run again and report the case if it "
+    "happens again."
 )
 
-DOMAIN_TREUE_AUS_HINWEIS = (
-    "Die Domain-Treue ist in der Policy-Datei abgeschaltet. Dieser Vorgang prüft deshalb nicht, ob "
-    "die Seite auf eine fremde Domain wechselt, und gibt auch von dort zurück, was er findet. "
-    "Setze enforce_domain_lock in ~/.config/jev-mcp/policy.toml wieder auf true, wenn das nicht "
-    "gewollt ist."
+DOMAIN_LOCK_OFF_NOTE = (
+    "The domain lock is disabled in the policy file. This operation therefore does not check whether "
+    "the page switches to a foreign domain, and it also returns what it finds there. Set "
+    "enforce_domain_lock in ~/.config/jev-mcp/policy.toml back to true if that is not intended."
 )
 
 
-def _policy_hinweise(wache: RunGuard) -> tuple[str, ...]:
-    """Was über die geltende Policy in **jedes** Ergebnis gehört.
+def _policy_notes(guard: RunGuard) -> tuple[str, ...]:
+    """What belongs in **every** result about the policy in force.
 
-    Ist die Domain-Treue abgeschaltet, gibt es keinen Sperrgrund, der das sagen
-    könnte: es wird ja nie gesperrt. Der Hinweis hängt deshalb nicht am Ausgang,
-    sondern am Lauf.
+    If the domain lock is disabled, there is no blocking reason that could say
+    so: nothing is ever blocked. The note is therefore not attached to the
+    outcome but to the run.
     """
-    if wache.policy.enforce_domain_lock:
+    if guard.policy.enforce_domain_lock:
         return ()
-    return (DOMAIN_TREUE_AUS_HINWEIS,)
+    return (DOMAIN_LOCK_OFF_NOTE,)
 
 
-def _ohne_ergebnis(auftrag: _Auftrag, stand: _Stand) -> RunResult:
-    """Der Faden hat sich fertig gemeldet und nichts abgelegt."""
-    return _ergebnis(auftrag, stand, RunStatus.FAILED, _OHNE_ERGEBNIS_HINWEIS, error=_OHNE_ERGEBNIS_HINWEIS)
+def _no_result(task: _Task, state: _ProgressState) -> RunResult:
+    """The thread reported itself done and left nothing behind."""
+    return _result(task, state, RunStatus.FAILED, _NO_RESULT_NOTE, error=_NO_RESULT_NOTE)
 
 
-def _mit_notiz(ergebnis: RunResult, hinweis: str) -> RunResult:
-    """Hängt einen Hinweis an ein fertiges Ergebnis, jeden Wortlaut nur einmal."""
-    if hinweis in ergebnis.notes:
-        return ergebnis
-    return replace(ergebnis, notes=(*ergebnis.notes, hinweis))
+def _with_note(result: RunResult, note: str) -> RunResult:
+    """Appends a note to a finished result, each wording only once."""
+    if note in result.notes:
+        return result
+    return replace(result, notes=(*result.notes, note))
 
 
 # ---------------------------------------------------------------------------
-# Die Eingangstür
+# The front door
 # ---------------------------------------------------------------------------
 
-_TAB_OFFEN_HINWEIS = (
-    "Der Browser-Tab dieses Laufs liess sich nicht schliessen und ist vermutlich noch offen. "
-    "Schliesse ihn von Hand, bevor du den nächsten Lauf startest."
+_TAB_OPEN_NOTE = (
+    "The browser tab of this run could not be closed and is probably still open. "
+    "Close it by hand before you start the next run."
 )
 
-_TAB_UNKLAR_HINWEIS = (
-    "Das Schliessen des Browser-Tabs war nach einer halben Sekunde noch nicht fertig. Das Ergebnis "
-    "stimmt trotzdem, nur über den Tab sagt es nichts. Sieh im Browser nach, ob er noch offen ist."
+_TAB_UNCLEAR_NOTE = (
+    "Closing the browser tab was still not finished after half a second. The result is correct "
+    "nonetheless, it just says nothing about the tab. Check in the browser whether it is still open."
 )
 
-_GLEICHZEITIG_HINWEIS = (
-    "Es läuft gerade schon ein Lauf, und es kann immer nur einer laufen. Ein Lauf bedient einen "
-    "einzigen Browser und setzt dafür Werte in der Umgebung dieses Prozesses, zwei Läufe würden "
-    "einander diese Werte überschreiben. Warte, bis der laufende Auftrag fertig ist, und starte "
-    "diesen danach erneut."
+_CONCURRENT_NOTE = (
+    "A run is already in progress, and only one can run at a time. A run operates a single "
+    "browser and sets values in the environment of this process for that, two runs would overwrite "
+    "each other's values. Wait until the current task is finished, and then start this one again."
 )
 
 
-def _gib_schloss_frei(faden: threading.Thread | None) -> None:
-    """Gibt das Lauf-Schloss frei, sobald der Arbeitsfaden wirklich fertig ist.
+def _release_run_lock(thread: threading.Thread | None) -> None:
+    """Releases the run lock as soon as the worker thread is really done.
 
-    Nach Ablauf des Zeitbudgets kehrt der Aufrufer mit einem Ergebnis zurück,
-    während der Faden noch im Browser arbeitet. Wurde das Schloss dabei sofort
-    freigegeben, startete der nächste Aufruf einen zweiten Lauf im selben
-    Browser, obwohl die Werkzeugbeschreibung zusagt, dass immer nur einer läuft.
-    Das ist kein Randfall: `Agent.__init__` ruft `ensure_daemon()`, das bis zu
-    sechzig Sekunden warten und notfalls Chrome starten kann, und das
-    Vorgabebudget eines Lesevorgangs ist dreissig Sekunden.
+    After the time budget runs out, the caller returns with a result while the
+    thread is still working in the browser. When the lock used to be released
+    immediately, the next call started a second run in the same browser,
+    although the tool description promises that only one ever runs. This is not
+    an edge case: `Agent.__init__` calls `ensure_daemon()`, which can wait up to
+    sixty seconds and start Chrome if necessary, and the default budget of a
+    read is thirty seconds.
 
-    Damit das Schloss nicht selbst zum Hänger wird, hat das Warten einen Deckel.
-    Danach wird freigegeben, auch wenn der Faden noch lebt.
+    So that the lock does not itself become a hang, the waiting has a cap.
+    After it, the lock is released even if the thread is still alive.
     """
-    if faden is None or not faden.is_alive():
-        _LAUF_SCHLOSS.release()
+    if thread is None or not thread.is_alive():
+        _RUN_LOCK.release()
         return
 
-    def warte() -> None:
+    def wait_then_release() -> None:
         try:
-            faden.join(_NACHLAUF_DECKEL_S)
+            thread.join(_AFTERRUN_CAP_S)
         finally:
-            _LAUF_SCHLOSS.release()
+            _RUN_LOCK.release()
 
-    threading.Thread(target=warte, name=f"{faden.name}-nachlauf", daemon=True).start()
+    threading.Thread(target=wait_then_release, name=f"{thread.name}-linger", daemon=True).start()
 
 
-def sicherer_text(wert: object) -> str:
-    """Macht aus irgendetwas einen Text, auch wenn dessen `__str__` wirft."""
+def safe_text(value: object) -> str:
+    """Turns anything into a text, even if its `__str__` raises."""
     try:
-        return str(wert)
+        return str(value)
     except Exception:  # noqa: BLE001
         return ""
 
 
-def _auftrag_aus(
+def _task_from(
     start_url: object,
     goals: object,
     max_actions: object,
     time_budget_s: object,
     dry_run: object,
     agent_factory: Callable[..., object] | None,
-) -> _Auftrag:
-    """Baut den geprüften Auftrag. Darf werfen, der Aufrufer fängt alles."""
-    grenze, budget_notes = _budget(max_actions)
-    zeit, zeit_notes = _zeitbudget(time_budget_s)
-    saetze, ziel_notes = _ziele(goals)  # type: ignore[arg-type]
-    return _Auftrag(
+) -> _Task:
+    """Builds the checked task. May raise, the caller catches everything."""
+    limit, budget_notes = _budget(max_actions)
+    budget_s, time_notes = _time_budget(time_budget_s)
+    goal_sentences, goal_notes = _goals(goals)  # type: ignore[arg-type]
+    return _Task(
         start_url=str(start_url or ""),
-        goals=saetze,
-        max_actions=grenze,
-        time_budget_s=zeit,
+        goals=goal_sentences,
+        max_actions=limit,
+        time_budget_s=budget_s,
         dry_run=bool(dry_run),
-        agent_factory=agent_factory or _standard_agent,
-        notes=(*budget_notes, *zeit_notes, *ziel_notes),
+        agent_factory=agent_factory or _default_agent,
+        notes=(*budget_notes, *time_notes, *goal_notes),
     )
 
 
-def _eingabe_gescheitert(start_url: object, fehler: BaseException) -> RunResult:
-    """Ein Ergebnis für Vorgaben, die sich gar nicht erst auswerten liessen."""
-    satz = (
-        "Die Vorgaben für diesen Lauf liessen sich nicht auswerten, deshalb wurde kein Browser "
-        f"geöffnet ({type(fehler).__name__}: {kurzfassung(sicherer_text(fehler) or 'ohne Text')}). "
-        "Prüfe Ziel, Aktionsbudget und Zeitbudget und versuche es erneut."
+def _input_failed(start_url: object, exc: BaseException) -> RunResult:
+    """A result for settings that could not even be evaluated."""
+    sentence = (
+        "The settings for this run could not be evaluated, so no browser was "
+        f"opened ({type(exc).__name__}: {condense(safe_text(exc) or 'no message')}). "
+        "Check the goal, the action budget and the time budget and try again."
     )
     return RunResult(
         status=RunStatus.NOT_STARTED,
         ok=False,
-        summary=satz,
-        start_url=sicherer_text(start_url),
-        url=sicherer_text(start_url),
+        summary=sentence,
+        start_url=safe_text(start_url),
+        url=safe_text(start_url),
         title="",
     )
 
@@ -1469,70 +1464,67 @@ def run_task(
     environment: EnvironmentApplication | None = None,
     agent_factory: Callable[..., object] | None = None,
 ) -> RunResult:
-    """Führt einen vollständigen Lauf aus und gibt ein serialisierbares Ergebnis zurück.
+    """Carries out a complete run and returns a serializable result.
 
-    `goals` sind Ziele in Worten, einzeln oder als Liste. `max_actions` ist die
-    Zahl der Aktionen, Vorgabe 25, Obergrenze 60, höhere Werte werden gekappt
-    und das steht danach in `notes`. `time_budget_s` ist die Wanduhrzeit,
-    Vorgabe 120 Sekunden, Obergrenze 900 Sekunden, und sie wird auch dann
-    durchgesetzt, wenn ein einzelner Schritt hängt: der Lauf läuft in einem
-    eigenen Faden, und nach Ablauf des Budgets wird der Agent geschlossen und
-    das Ergebnis gebaut.
+    `goals` are goals in words, single or as a list. `max_actions` is the number
+    of actions, default 25, upper limit 60, higher values are capped and that is
+    stated in `notes` afterwards. `time_budget_s` is the wall-clock time,
+    default 120 seconds, upper limit 900 seconds, and it is enforced even when a
+    single step hangs: the run executes in its own thread, and once the budget
+    has run out the agent is closed and the result is built.
 
-    `dry_run=True` beobachtet die Seite und holt die erste Entscheidung des
-    Modells ein, führt sie aber nicht aus. Das Ergebnis sagt dann, was der Agent
-    als Nächstes täte, und ob dieser Schritt den Auftrag verlassen würde. Eine
-    Rückfrage beim Menschen gibt es bewusst nicht, der Trockenlauf tritt an ihre
-    Stelle.
+    `dry_run=True` observes the page and obtains the model's first decision, but
+    does not execute it. The result then says what the agent would do next, and
+    whether that step would leave the domain this run is bound to. There is
+    deliberately no confirmation prompt to the human, the dry run takes its
+    place.
 
-    `allow_domains` erlaubt zusätzliche Domänen für diesen Lauf, alles Weitere
-    zur Domain-Treue steht in `guards.py`. `environment` und `agent_factory`
-    sind Nähte: ohne sie wendet der Lauf die Umgebung selbst an und baut den
-    echten Agenten.
+    `allow_domains` permits additional domains for this run, everything else
+    about the domain lock is in `guards.py`. `environment` and `agent_factory`
+    are seams: without them the run applies the environment itself and builds
+    the real agent.
 
-    Es läuft immer nur ein Lauf gleichzeitig. Ein zweiter Aufruf, der einen
-    laufenden antrifft, wird sofort mit `not_started` abgewiesen, statt zu
-    warten. Der Grund steht in `_GLEICHZEITIG_HINWEIS`. Nach einer
-    Zeitüberschreitung gilt das weiter: der Aufrufer bekommt sein Ergebnis, das
-    Schloss bleibt aber, bis der Arbeitsfaden wirklich fertig ist, siehe
-    `_gib_schloss_frei()`.
+    Only one run executes at a time. A second call that finds one running is
+    rejected immediately with `not_started` instead of waiting. The reason is in
+    `_CONCURRENT_NOTE`. This still holds after a timeout: the caller gets its
+    result, but the lock stays until the worker thread is really done, see
+    `_release_run_lock()`.
 
-    Der Agent wird in jedem Fall geschlossen, auch bei einer Ausnahme und auch
-    bei Zeitüberschreitung. Gelingt das nicht, sagt ein Hinweis im Ergebnis das.
-    Diese Funktion wirft nicht, jeder Ausgang ist ein `RunResult`.
+    The agent is closed in every case, including on an exception and on a
+    timeout. If that fails, a note in the result says so. This function does not
+    raise, every outcome is a `RunResult`.
     """
     try:
-        auftrag = _auftrag_aus(start_url, goals, max_actions, time_budget_s, dry_run, agent_factory)
-    except Exception as fehler:  # noqa: BLE001
-        return _eingabe_gescheitert(start_url, fehler)
+        task = _task_from(start_url, goals, max_actions, time_budget_s, dry_run, agent_factory)
+    except Exception as exc:  # noqa: BLE001
+        return _input_failed(start_url, exc)
 
-    if not auftrag.goals:
-        return _ohne_lauf(
-            auftrag,
+    if not task.goals:
+        return _without_run(
+            task,
             RunStatus.NOT_STARTED,
-            "Es wurde kein Ziel angegeben, deshalb wurde kein Browser geöffnet. Nenne in Worten, was "
-            "auf der Seite geschehen soll.",
+            "No goal was given, so no browser was opened. Say in words what should happen on the page.",
         )
 
-    if not _LAUF_SCHLOSS.acquire(blocking=False):
-        return _ohne_lauf(auftrag, RunStatus.NOT_STARTED, _GLEICHZEITIG_HINWEIS)
-    faden: threading.Thread | None = None
+    if not _RUN_LOCK.acquire(blocking=False):
+        return _without_run(task, RunStatus.NOT_STARTED, _CONCURRENT_NOTE)
+    thread: threading.Thread | None = None
     try:
-        ergebnis, faden = _fuehre_aus(
-            auftrag,
+        result, thread = _execute(
+            task,
             allow_domains=allow_domains,
             allow_unbound=allow_unbound,
             policy=policy,
             policy_path=policy_path,
             environment=environment,
         )
-        return ergebnis
+        return result
     finally:
-        _gib_schloss_frei(faden)
+        _release_run_lock(thread)
 
 
-def _fuehre_aus(
-    auftrag: _Auftrag,
+def _execute(
+    task: _Task,
     *,
     allow_domains: Iterable[str] | str | None,
     allow_unbound: bool,
@@ -1540,183 +1532,183 @@ def _fuehre_aus(
     policy_path: object | None,
     environment: EnvironmentApplication | None,
 ) -> tuple[RunResult, threading.Thread | None]:
-    """Der Lauf selbst, mit bereits geprüften Vorgaben und unter dem Lauf-Schloss.
+    """The run itself, with already checked settings and under the run lock.
 
-    Gibt neben dem Ergebnis den Arbeitsfaden zurück, sofern einer gestartet
-    wurde. Der Aufrufer gibt das Lauf-Schloss erst frei, wenn dieser Faden
-    fertig ist, siehe `_gib_schloss_frei()`.
+    Returns the worker thread alongside the result, if one was started. The
+    caller only releases the run lock once this thread is done, see
+    `_release_run_lock()`.
     """
     try:
-        angewandt = environment if environment is not None else apply_environment()
-        bereit = bool(angewandt.ok)
-        umgebungs_notes = tuple(str(hinweis) for hinweis in (angewandt.notes or ()))
-    except Exception as fehler:  # noqa: BLE001
-        return _ohne_lauf(
-            auftrag,
+        applied = environment if environment is not None else apply_environment()
+        ready = bool(applied.ok)
+        environment_notes = tuple(str(note) for note in (applied.notes or ()))
+    except Exception as exc:  # noqa: BLE001
+        return _without_run(
+            task,
             RunStatus.NOT_STARTED,
-            "Die Voraussetzungen für einen Lauf liessen sich nicht auswerten, deshalb wurde kein "
-            f"Browser geöffnet ({type(fehler).__name__}: "
-            f"{kurzfassung(sicherer_text(fehler) or 'ohne Text')}).",
+            "The prerequisites for a run could not be evaluated, so no "
+            f"browser was opened ({type(exc).__name__}: "
+            f"{condense(safe_text(exc) or 'no message')}).",
         ), None
 
-    if not bereit:
-        return _ohne_lauf(
-            auftrag,
+    if not ready:
+        return _without_run(
+            task,
             RunStatus.NOT_STARTED,
-            "Die Voraussetzungen für einen Lauf stimmen nicht, deshalb wurde kein Browser geöffnet. "
-            "Die Hinweise sagen, was fehlt.",
-            notes=umgebungs_notes,
+            "The prerequisites for a run are not met, so no browser was opened. "
+            "The notes say what is missing.",
+            notes=environment_notes,
         ), None
 
     try:
-        wache = start_run(
-            auftrag.start_url,
+        guard = start_run(
+            task.start_url,
             allow_domains,
             policy,
             allow_unbound=allow_unbound,
             policy_path=policy_path,  # type: ignore[arg-type]
         )
-        eingang = wache.check(auftrag.start_url, Moment.BEFORE)
-    except Exception as fehler:  # noqa: BLE001
-        return _ohne_lauf(
-            auftrag,
+        entry_check = guard.check(task.start_url, Moment.BEFORE)
+    except Exception as exc:  # noqa: BLE001
+        return _without_run(
+            task,
             RunStatus.NOT_STARTED,
-            translate_error(fehler),
-            notes=umgebungs_notes,
+            translate_error(exc),
+            notes=environment_notes,
         ), None
 
-    umgebungs_notes = (*umgebungs_notes, *_policy_hinweise(wache))
+    environment_notes = (*environment_notes, *_policy_notes(guard))
 
-    if not eingang.allowed or not eingang.may_interact:
-        return _ohne_lauf(
-            auftrag,
+    if not entry_check.allowed or not entry_check.may_interact:
+        return _without_run(
+            task,
             RunStatus.STOPPED_DOMAIN,
-            f"Die Start-Adresse taugt nicht als Auftrag, es wurde kein Browser geöffnet. {eingang.reason}",
-            notes=(*umgebungs_notes, *eingang.warnings),
-            domain_stop=_domain_stop(eingang),
+            f"The start URL cannot be used for a run, so no browser was opened. {entry_check.reason}",
+            notes=(*environment_notes, *entry_check.warnings),
+            domain_stop=_domain_stop(entry_check),
         ), None
 
-    fortschritt = _Fortschritt(auftrag.start_url, (*auftrag.notes, *umgebungs_notes))
-    sitzung = _Sitzung()
-    abbruch = threading.Event()
-    fertig = threading.Event()
-    geschlossen = threading.Event()
-    kasten: list[RunResult] = []
-    schluss: list[bool] = []
+    progress = _Progress(task.start_url, (*task.notes, *environment_notes))
+    session = _Session()
+    cancel = threading.Event()
+    finished = threading.Event()
+    closed = threading.Event()
+    result_box: list[RunResult] = []
+    close_outcome: list[bool] = []
 
-    def arbeite() -> None:
-        # Der Riegel für die Standardausgabe gehört in den Faden selbst. Der des
-        # Werkzeugaufrufs endet mit dem Aufruf, dieser Faden überlebt ihn.
-        with ohne_stdout():
+    def work() -> None:
+        # The latch for standard output belongs in the thread itself. The one of
+        # the tool call ends with the call, this thread outlives it.
+        with stdout_to_stderr():
             try:
-                agent = auftrag.agent_factory(auftrag.start_url, list(auftrag.goals))
-                sitzung.uebernimm(agent)
-                kasten.append(_schleife(auftrag, wache, fortschritt, agent, abbruch))
-            except BaseException as fehler:  # noqa: BLE001
-                # Auch `KeyboardInterrupt` und `SystemExit`. Fing dieser Faden nur
-                # `Exception`, legte er kein Ergebnis ab, meldete sich aber als
-                # fertig, und der Aufrufer behauptete danach eine Zeitüberschreitung,
-                # die es nie gab. Die wahre Ursache verschwand dabei spurlos.
-                kasten.append(_gescheitert(auftrag, fortschritt, fehler))
+                agent = task.agent_factory(task.start_url, list(task.goals))
+                session.adopt(agent)
+                result_box.append(_loop(task, guard, progress, agent, cancel))
+            except BaseException as exc:  # noqa: BLE001
+                # Including `KeyboardInterrupt` and `SystemExit`. If this thread
+                # only caught `Exception`, it left no result but reported itself
+                # done, and the caller then claimed a timeout that never
+                # happened. The true cause vanished without a trace.
+                result_box.append(_failed(task, progress, exc))
             finally:
-                # Erst melden, dann aufräumen. Hängt das Schliessen, wartete der
-                # Aufrufer sonst das ganze Zeitbudget ab und meldete eine
-                # Zeitüberschreitung, obwohl das fertige Ergebnis längst vorlag.
-                fertig.set()
-                schluss.append(sitzung.schliesse())
-                geschlossen.set()
+                # Report first, then clean up. If closing hangs, the caller would
+                # otherwise wait out the whole time budget and report a timeout,
+                # although the finished result had long been available.
+                finished.set()
+                close_outcome.append(session.close())
+                closed.set()
 
-    faden = threading.Thread(target=arbeite, name=f"jev-mcp-run-{next(_LAUF_NUMMER)}", daemon=True)
-    faden.start()
-    beendet = fertig.wait(auftrag.time_budget_s)
-    if beendet and kasten:
-        ergebnis = kasten[0]
-        if not geschlossen.wait(_ABKLINGZEIT_S):
-            return _mit_notiz(ergebnis, _TAB_UNKLAR_HINWEIS), faden
-        if schluss and not schluss[0]:
-            return _mit_notiz(ergebnis, _TAB_OFFEN_HINWEIS), faden
-        return ergebnis, faden
-    if beendet:
-        # Der Faden hat sich fertig gemeldet, aber nichts abgelegt: sein eigener
-        # Fehlerzweig ist gescheitert. Eine Zeitüberschreitung war das nicht.
-        return _ohne_ergebnis(auftrag, fortschritt.lies()), faden
+    thread = threading.Thread(target=work, name=f"jev-mcp-run-{next(_RUN_NUMBER)}", daemon=True)
+    thread.start()
+    completed = finished.wait(task.time_budget_s)
+    if completed and result_box:
+        result = result_box[0]
+        if not closed.wait(_SETTLE_TIME_S):
+            return _with_note(result, _TAB_UNCLEAR_NOTE), thread
+        if close_outcome and not close_outcome[0]:
+            return _with_note(result, _TAB_OPEN_NOTE), thread
+        return result, thread
+    if completed:
+        # The thread reported itself done but left nothing behind: its own error
+        # branch failed. That was not a timeout.
+        return _no_result(task, progress.read()), thread
 
-    # Zeitbudget abgelaufen: erst dem Faden sagen, dass Schluss ist, dann den
-    # Browser-Tab freigeben. Ein Ergebnis, das der Faden danach noch ablegt,
-    # zählt nicht mehr, damit der Ausgang eindeutig bleibt.
-    abbruch.set()
-    erfolg = sitzung.schliesse()
-    fertig.wait(_ABKLINGZEIT_S)
+    # Time budget used up: first tell the thread that it is over, then release
+    # the browser tab. A result the thread still leaves behind after that no
+    # longer counts, so that the outcome stays unambiguous.
+    cancel.set()
+    closed_ok = session.close()
+    finished.wait(_SETTLE_TIME_S)
     return (
-        _zeit_erschoepft(auftrag, fortschritt.lies(), schluss=_schlusssatz(sitzung, erfolg)),
-        faden,
+        _time_used_up(task, progress.read(), tab_note=_tab_sentence(session, closed_ok)),
+        thread,
     )
 
 
 # ---------------------------------------------------------------------------
-# Lesen, ohne zu handeln
+# Reading without acting
 # ---------------------------------------------------------------------------
 #
-# `read_page()` ist die zweite Eingangstür dieses Moduls. Sie öffnet eine Seite,
-# beobachtet sie genau einmal und gibt zurück, was dort steht. Sie ruft weder
-# `predict` noch `act` auf, es fällt also kein Modellaufruf an und es wird
-# nichts geklickt und nichts getippt.
+# `read_page()` is the second front door of this module. It opens a page,
+# observes it exactly once and returns what is on it. It calls neither
+# `predict` nor `act`, so there is no model call, and nothing is clicked and
+# nothing is typed.
 #
-# Die Domain-Treue gilt trotzdem. Eine Weiterleitung kann die Seite woanders
-# hinführen, und was dann im Ergebnis stünde, käme von einer fremden Domain,
-# ohne dass der Auftraggeber das je erfahren hätte. Deshalb wird nach dem Laden
-# mit `Moment.AFTER` geprüft: gleiche Domain heisst lesen und den Wechsel
-# vermerken, fremde Domain heisst anhalten und nichts zurückgeben. Nichts heisst
-# nichts: auch nicht den Titel und auch nicht die erreichte Adresse. Beides ist
-# Text, den ein Angreifer setzt, und ein Titel trägt Zeilenumbrüche,
-# Steuerzeichen und beliebige Länge. Als Adresse steht die entschärfte Kurzform
-# aus der Entscheidung da, dieselbe wie in `domain_stop.target_url`.
+# The domain lock applies nonetheless. A redirect can take the page elsewhere,
+# and what would then be in the result would come from a foreign domain without
+# the requester ever having learned about it. That is why the check after the
+# load uses `Moment.AFTER`: same domain means read and record the change,
+# foreign domain means stop and return nothing. Nothing means nothing: not the
+# title either, and not the address reached. Both are text an attacker sets, and
+# a title carries line breaks, control characters and any length. The address
+# shown is the defused short form from the decision, the same as in
+# `domain_stop.target_url`.
 #
-# Es gelten dieselben Regeln wie für `run_task()`: diese Funktion wirft nie, sie
-# schliesst den Agenten in jedem Fall, und sie hält dasselbe Lauf-Schloss, denn
-# sie bedient denselben einen Browser.
+# The same rules apply as for `run_task()`: this function never raises, it
+# closes the agent in every case, and it holds the same run lock, because it
+# operates the same single browser.
 
-READ_GOAL = "Diese Seite nur ansehen. Es wird nichts geklickt und nichts getippt."
-"""Der Auftrag, mit dem der Agent gebaut wird. Er wird nie ausgeführt.
+READ_GOAL = "Only look at this page. Nothing is clicked and nothing is typed."
+"""The task the agent is built with. It is never executed.
 
-`jev_ultrafast.Agent` besteht auf einem Auftrag und lehnt einen leeren ab. Der
-Satz steht also nur da, damit der Agent sich bauen lässt: es folgt kein
-`predict`, also sieht ihn auch kein Modell.
+`jev_ultrafast.Agent` insists on a task and rejects an empty one. The sentence
+is only there so that the agent can be built: no `predict` follows, so no model
+ever sees it.
 """
 
 DEFAULT_READ_TIME_BUDGET_S = 30.0
-"""Vorgabe für die Wanduhrzeit eines Lesevorgangs, in Sekunden."""
+"""Default for the wall-clock time of a read, in seconds."""
 
 DEFAULT_TEXT_LIMIT = 4000
-"""So viele Zeichen sichtbaren Text gibt ein Lesevorgang höchstens zurück."""
+"""The maximum number of characters of visible text a read returns."""
 
 MAX_TEXT_LIMIT = 20000
-"""Obergrenze für diese Zahl. `snapshot.js` liefert ohnehin höchstens 6000."""
+"""Upper limit for that number. `snapshot.js` delivers at most 6000 anyway."""
 
 MIN_TEXT_LIMIT = 200
 
 MAX_READ_ELEMENTS = 120
-"""So viele Elemente stehen höchstens in der Tabelle. Die Bibliothek liefert bis zu 250."""
+"""The maximum number of elements in the table. The library delivers up to 250."""
 
 MAX_ELEMENT_TEXT = 200
-"""So lang darf eine Beschriftung oder ein Feldwert in der Tabelle höchstens sein.
+"""The maximum length of a label or a field value in the table.
 
-`text_limit` begrenzt nur den sichtbaren Text. Beschriftung, Feldwert und
-Auswahlliste waren unbegrenzt, und eine Seite mit vielen langen Auswahllisten
-ergab bei `text_limit=200` eine Antwort von 16,9 Megabyte.
+`text_limit` only bounds the visible text. Label, field value and dropdown list
+were unbounded, and a page with many long dropdown lists produced a response
+of 16.9 megabytes at `text_limit=200`.
 """
 
 MAX_ELEMENT_OPTIONS = 50
-"""So viele Einträge einer Auswahlliste stehen höchstens in der Tabelle."""
+"""The maximum number of entries of a dropdown list in the table."""
 
 
 @dataclass(frozen=True)
 class ReadElement:
-    """Ein bedienbares Element der gelesenen Seite.
+    """An operable element of the page that was read.
 
-    Dieselbe Sicht, die auch das Entscheidungsmodell bekommt: `index` ist die
-    Nummer, unter der `jev_ultrafast` das Element führt, `operations` sagt, was
-    darauf möglich wäre. Ausgeführt wird davon beim Lesen nichts.
+    The same view the decision model gets: `index` is the number under which
+    `jev_ultrafast` tracks the element, `operations` says what would be
+    possible on it. None of it is executed while reading.
     """
 
     index: str
@@ -1729,20 +1721,20 @@ class ReadElement:
 
 @dataclass(frozen=True)
 class ReadResult:
-    """Das Ergebnis eines Lesevorgangs, serialisierbar wie `RunResult`.
+    """The result of a read, serializable like `RunResult`.
 
-    `text` ist der sichtbare Text der Seite, gekürzt auf `text_chars` Zeichen.
-    `text_total_chars` sagt, wie lang der **beobachtete** Text vor dem Kürzen
-    war, und das ist nicht dasselbe wie die Länge der Seite: `snapshot.js`
-    schneidet bei `LIBRARY_TEXT_LIMIT` Zeichen ab, bevor `text_limit` überhaupt
-    greift. Erreicht der beobachtete Text genau diese Länge, sagt ein Hinweis
-    das. `text_truncated` sagt, ob dieser Modul zusätzlich gekürzt hat.
-    `redirected` sagt, ob die Seite woanders geendet ist als die angefragte
-    Adresse.
+    `text` is the visible text of the page, shortened to `text_chars`
+    characters. `text_total_chars` says how long the **observed** text was
+    before shortening, and that is not the same as the length of the page:
+    `snapshot.js` cuts off at `LIBRARY_TEXT_LIMIT` characters before
+    `text_limit` applies at all. If the observed text reaches exactly this
+    length, a note says so. `text_truncated` says whether this module shortened
+    it in addition. `redirected` says whether the page ended somewhere other
+    than the requested address.
 
-    Was über Geheimnisse im Ergebnis gilt, steht im Modul-Docstring. Für das
-    Lesen kommt nichts hinzu: es wird nichts getippt, und der Auftragstext ist
-    ein fester Satz.
+    What applies to secrets in the result is in the module docstring. Reading
+    adds nothing to that: nothing is typed, and the task text is a fixed
+    sentence.
     """
 
     status: RunStatus
@@ -1766,125 +1758,125 @@ class ReadResult:
     error: str | None = None
 
 
-_LESE_ZEIT_HINWEIS = (
-    "Das Zeitbudget war keine brauchbare Zahl, es gilt deshalb die Vorgabe von "
-    f"{int(DEFAULT_READ_TIME_BUDGET_S)} Sekunden."
+_READ_TIME_NOTE = (
+    "The time budget was not a usable number, so the default of "
+    f"{int(DEFAULT_READ_TIME_BUDGET_S)} seconds applies."
 )
 
-_LESE_GRENZE_HINWEIS = (
-    f"Die Textgrenze war keine brauchbare Zahl, es gilt deshalb die Vorgabe von {DEFAULT_TEXT_LIMIT} Zeichen."
+_READ_LIMIT_NOTE = (
+    f"The text limit was not a usable number, so the default of {DEFAULT_TEXT_LIMIT} characters applies."
 )
 
-_BEOBACHTUNGSGRENZE_HINWEIS = (
-    f"Die Bibliothek beobachtet höchstens {LIBRARY_TEXT_LIMIT} Zeichen sichtbaren Text, und genau "
-    "diese Länge wurde erreicht. Die Seite kann also länger sein, als hier steht, und zwar "
-    "unabhängig von text_limit."
+_OBSERVATION_LIMIT_NOTE = (
+    f"The library observes at most {LIBRARY_TEXT_LIMIT} characters of visible text, and exactly "
+    "this length was reached. The page may therefore be longer than what is shown here, "
+    "regardless of text_limit."
 )
 
 
-def _lese_zeitbudget(time_budget_s: object) -> tuple[float, tuple[str, ...]]:
-    """Prüft das Zeitbudget eines Lesevorgangs."""
-    wert = _als_zahl(time_budget_s)
-    if wert is None or wert <= 0:
-        return DEFAULT_READ_TIME_BUDGET_S, (_LESE_ZEIT_HINWEIS,)
-    if wert > MAX_TIME_BUDGET_S:
+def _read_time_budget(time_budget_s: object) -> tuple[float, tuple[str, ...]]:
+    """Checks the time budget of a read."""
+    value = _as_number(time_budget_s)
+    if value is None or value <= 0:
+        return DEFAULT_READ_TIME_BUDGET_S, (_READ_TIME_NOTE,)
+    if value > MAX_TIME_BUDGET_S:
         return MAX_TIME_BUDGET_S, (
-            f"Das Zeitbudget von {wert:g} Sekunden liegt über der Obergrenze und wurde auf "
-            f"{int(MAX_TIME_BUDGET_S)} Sekunden gekappt.",
+            f"The time budget of {value:g} seconds is above the upper limit and was capped at "
+            f"{int(MAX_TIME_BUDGET_S)} seconds.",
         )
-    return wert, ()
+    return value, ()
 
 
-def _textgrenze(text_limit: object) -> tuple[int, tuple[str, ...]]:
-    """Prüft, auf wie viele Zeichen der sichtbare Text gekürzt wird."""
-    wert = _als_zahl(text_limit)
-    if wert is None:
-        return DEFAULT_TEXT_LIMIT, (_LESE_GRENZE_HINWEIS,)
-    zahl = int(wert)
-    if zahl < MIN_TEXT_LIMIT:
+def _text_limit(text_limit: object) -> tuple[int, tuple[str, ...]]:
+    """Checks to how many characters the visible text is shortened."""
+    value = _as_number(text_limit)
+    if value is None:
+        return DEFAULT_TEXT_LIMIT, (_READ_LIMIT_NOTE,)
+    number = int(value)
+    if number < MIN_TEXT_LIMIT:
         return MIN_TEXT_LIMIT, (
-            f"Die Textgrenze lag unter {MIN_TEXT_LIMIT} Zeichen und wurde auf {MIN_TEXT_LIMIT} "
-            "Zeichen angehoben.",
+            f"The text limit was below {MIN_TEXT_LIMIT} characters and was raised to {MIN_TEXT_LIMIT} "
+            "characters.",
         )
-    if zahl > MAX_TEXT_LIMIT:
+    if number > MAX_TEXT_LIMIT:
         return MAX_TEXT_LIMIT, (
-            f"Die Textgrenze von {zahl} Zeichen liegt über der Obergrenze und wurde auf "
-            f"{MAX_TEXT_LIMIT} Zeichen gekappt.",
+            f"The text limit of {number} characters is above the upper limit and was capped at "
+            f"{MAX_TEXT_LIMIT} characters.",
         )
-    return zahl, ()
+    return number, ()
 
 
-_ELEMENT_TEXT_HINWEIS = (
-    f"Mindestens eine Beschriftung oder ein Feldwert war länger als {MAX_ELEMENT_TEXT} Zeichen und "
-    "wurde für die Tabelle gekappt."
+_ELEMENT_TEXT_NOTE = (
+    f"At least one label or field value was longer than {MAX_ELEMENT_TEXT} characters and "
+    "was capped for the table."
 )
 
-_ELEMENT_OPTIONEN_HINWEIS = (
-    f"Mindestens eine Auswahlliste hatte mehr als {MAX_ELEMENT_OPTIONS} Einträge. In der Tabelle "
-    f"stehen die ersten {MAX_ELEMENT_OPTIONS}."
+_ELEMENT_OPTIONS_NOTE = (
+    f"At least one dropdown list had more than {MAX_ELEMENT_OPTIONS} entries. The table "
+    f"shows the first {MAX_ELEMENT_OPTIONS}."
 )
 
 
-def _gekappt(wert: object, gekappte: list[str]) -> str:
-    """Kürzt einen einzelnen Wert der Elementtabelle und vermerkt das."""
-    text = sicherer_text(wert)
+def _capped(value: object, capped_notes: list[str]) -> str:
+    """Shortens a single value of the element table and records that."""
+    text = safe_text(value)
     if len(text) <= MAX_ELEMENT_TEXT:
         return text
-    gekappte.append(_ELEMENT_TEXT_HINWEIS)
+    capped_notes.append(_ELEMENT_TEXT_NOTE)
     return text[:MAX_ELEMENT_TEXT]
 
 
-def _leseelemente(momentaufnahme: Mapping) -> tuple[tuple[ReadElement, ...], int, tuple[str, ...]]:
-    """Baut die Elementtabelle aus `agent.snapshot()["elements"]`.
+def _read_elements(snapshot: Mapping) -> tuple[tuple[ReadElement, ...], int, tuple[str, ...]]:
+    """Builds the element table from `agent.snapshot()["elements"]`.
 
-    Das ist dieselbe Tabelle, die `jev_ultrafast.model.action_space()` für das
-    Entscheidungsmodell baut. Fehlt sie, bleibt die Tabelle leer, statt dass
-    hier etwas erfunden wird.
+    This is the same table that `jev_ultrafast.model.action_space()` builds for
+    the decision model. If it is missing, the table stays empty instead of
+    something being invented here.
 
-    Gibt zusätzlich die Hinweise zurück, wenn etwas gekappt wurde. Geprüft wird
-    auf `list` und `tuple`, nicht auf `Sequence`: eine Zeichenkette ist eine
-    Sequence, und die Antwort behauptete deshalb einmal «57 bedienbare Elemente,
-    in der Tabelle stehen die ersten 0», weil sie deren Zeichen gezählt hatte.
+    Also returns the notes if something was capped. The check is for `list` and
+    `tuple`, not for `Sequence`: a string is a Sequence, and the response
+    therefore once claimed "The page has 57 operable elements, the table shows
+    the first 0", because it had counted the string's characters.
     """
-    roh = momentaufnahme.get("elements") or []
-    if not isinstance(roh, list | tuple):
+    raw = snapshot.get("elements") or []
+    if not isinstance(raw, list | tuple):
         return (), 0, ()
-    hinweise: list[str] = []
-    elemente: list[ReadElement] = []
-    for eintrag in list(roh)[:MAX_READ_ELEMENTS]:
-        if not isinstance(eintrag, Mapping):
+    collected_notes: list[str] = []
+    element_rows: list[ReadElement] = []
+    for entry in list(raw)[:MAX_READ_ELEMENTS]:
+        if not isinstance(entry, Mapping):
             continue
-        rohe_optionen = [option for option in (eintrag.get("options") or []) if isinstance(option, Mapping)]
-        if len(rohe_optionen) > MAX_ELEMENT_OPTIONS:
-            hinweise.append(_ELEMENT_OPTIONEN_HINWEIS)
-        optionen = tuple(
-            _gekappt(option.get("label"), hinweise) for option in rohe_optionen[:MAX_ELEMENT_OPTIONS]
+        raw_options = [option for option in (entry.get("options") or []) if isinstance(option, Mapping)]
+        if len(raw_options) > MAX_ELEMENT_OPTIONS:
+            collected_notes.append(_ELEMENT_OPTIONS_NOTE)
+        option_labels = tuple(
+            _capped(option.get("label"), collected_notes) for option in raw_options[:MAX_ELEMENT_OPTIONS]
         )
-        wert = eintrag.get("value")
-        elemente.append(
+        value = entry.get("value")
+        element_rows.append(
             ReadElement(
-                index=_gekappt(eintrag.get("index") or "", hinweise),
-                label=_gekappt(eintrag.get("label") or "", hinweise),
-                role=_gekappt(eintrag.get("role") or "", hinweise),
-                operations=tuple(_gekappt(name, hinweise) for name in (eintrag.get("operations") or [])),
-                value=None if wert is None else _gekappt(wert, hinweise),
-                options=optionen,
+                index=_capped(entry.get("index") or "", collected_notes),
+                label=_capped(entry.get("label") or "", collected_notes),
+                role=_capped(entry.get("role") or "", collected_notes),
+                operations=tuple(_capped(name, collected_notes) for name in (entry.get("operations") or [])),
+                value=None if value is None else _capped(value, collected_notes),
+                options=option_labels,
             )
         )
-    return tuple(elemente), len(roh), tuple(dict.fromkeys(hinweise))
+    return tuple(element_rows), len(raw), tuple(dict.fromkeys(collected_notes))
 
 
-def _gekuerzter_text(text: object, grenze: int) -> tuple[str, bool, int]:
-    """Kürzt den sichtbaren Text und sagt, wie lang er vorher war."""
-    ganz = sicherer_text(text or "")
-    if len(ganz) <= grenze:
-        return ganz, False, len(ganz)
-    return ganz[:grenze], True, len(ganz)
+def _shortened_text(text: object, limit: int) -> tuple[str, bool, int]:
+    """Shortens the visible text and says how long it was before."""
+    full = safe_text(text or "")
+    if len(full) <= limit:
+        return full, False, len(full)
+    return full[:limit], True, len(full)
 
 
-def _lese_ergebnis(
+def _read_result(
     start_url: str,
-    zeit: float,
+    budget_s: float,
     status: RunStatus,
     summary: str,
     *,
@@ -1896,7 +1888,7 @@ def _lese_ergebnis(
     duration_ms: int = 0,
     error: str | None = None,
 ) -> ReadResult:
-    """Ein Leseergebnis ohne Seiteninhalt, für jeden Ausgang ausser dem Erfolg."""
+    """A read result without page content, for every outcome except success."""
     return ReadResult(
         status=status,
         ok=ok,
@@ -1904,107 +1896,106 @@ def _lese_ergebnis(
         start_url=start_url,
         url=url if url is not None else start_url,
         title=title,
-        time_budget_s=zeit,
+        time_budget_s=budget_s,
         duration_ms=duration_ms,
-        notes=tuple(dict.fromkeys(str(hinweis) for hinweis in notes if hinweis)),
+        notes=tuple(dict.fromkeys(str(note) for note in notes if note)),
         domain_stop=domain_stop,
         error=error,
     )
 
 
-def _beobachte_einmal(
+def _observe_once(
     agent: object,
     start_url: str,
-    wache: RunGuard,
-    zeit: float,
-    grenze: int,
-    notizen: Sequence[str],
-    begonnen: float,
+    guard: RunGuard,
+    budget_s: float,
+    limit: int,
+    initial_notes: Sequence[str],
+    started: float,
 ) -> ReadResult:
-    """Beobachtet die geöffnete Seite genau einmal und macht daraus ein Ergebnis."""
-    momentaufnahme = agent.snapshot()  # type: ignore[attr-defined]
-    seite = momentaufnahme.get("page") or {}
-    erreicht = sicherer_text(seite.get("url") or start_url)
-    titel = sicherer_text(seite.get("title") or "")
-    dauer = round((time.monotonic() - begonnen) * 1000)
+    """Observes the opened page exactly once and turns that into a result."""
+    snapshot = agent.snapshot()  # type: ignore[attr-defined]
+    page = snapshot.get("page") or {}
+    reached_url = safe_text(page.get("url") or start_url)
+    page_title = safe_text(page.get("title") or "")
+    elapsed = round((time.monotonic() - started) * 1000)
 
-    hinweise = [*notizen]
-    entscheidung = wache.check(erreicht, Moment.AFTER)
-    if entscheidung.policy_note:
-        hinweise.append(entscheidung.policy_note)
-    hinweise.extend(entscheidung.warnings)
+    collected_notes = [*initial_notes]
+    decision = guard.check(reached_url, Moment.AFTER)
+    if decision.policy_note:
+        collected_notes.append(decision.policy_note)
+    collected_notes.extend(decision.warnings)
 
-    if not entscheidung.allowed:
-        satz = (
-            "Die Seite ist beim Laden auf eine fremde Domain gewechselt, deshalb wurde nichts "
-            f"gelesen. {entscheidung.reason} Wenn das gewollt ist, nenne die Domain in "
+    if not decision.allowed:
+        sentence = (
+            "The page switched to a foreign domain while loading, so nothing was "
+            f"read. {decision.reason} If that is intended, name the domain in "
             "allow_domains."
         )
-        # Von der fremden Seite kommt nichts zurück, auch nicht ihr Titel und
-        # nicht ihre rohe Adresse. Ein Titel ist beliebiger Text: eine Anweisung
-        # an das Modell, Steuerzeichen, beliebige Länge. Als Adresse steht die
-        # entschärfte Kurzform aus der Entscheidung da.
-        return _lese_ergebnis(
+        # Nothing comes back from the foreign page, not its title either and
+        # not its raw address. A title is arbitrary text: an instruction to the
+        # model, control characters, any length. The address shown is the
+        # defused short form from the decision.
+        return _read_result(
             start_url,
-            zeit,
+            budget_s,
             RunStatus.STOPPED_DOMAIN,
-            satz,
-            url=entscheidung.target_url,
+            sentence,
+            url=decision.target_url,
             title="",
-            notes=hinweise,
-            domain_stop=_domain_stop(entscheidung),
-            duration_ms=dauer,
+            notes=collected_notes,
+            domain_stop=_domain_stop(decision),
+            duration_ms=elapsed,
         )
 
-    umgeleitet = erreicht != start_url
-    if umgeleitet:
-        hinweise.append(
-            f"Die angefragte Adresse hat auf {erreicht} weitergeleitet, gelesen wurde diese Seite."
+    was_redirected = reached_url != start_url
+    if was_redirected:
+        collected_notes.append(
+            f"The requested URL redirected to {reached_url}, and that page is the one that was read."
         )
 
-    text, gekuerzt, ganze_laenge = _gekuerzter_text(seite.get("text"), grenze)
-    if gekuerzt:
-        hinweise.append(
-            f"Der beobachtete Text war {ganze_laenge} Zeichen lang und wurde auf {len(text)} Zeichen "
-            "gekürzt, der Rest steht nicht in dieser Antwort."
+    text, was_shortened, full_length = _shortened_text(page.get("text"), limit)
+    if was_shortened:
+        collected_notes.append(
+            f"The observed text was {full_length} characters long and was shortened to {len(text)} "
+            "characters, the rest is not in this response."
         )
-    if ganze_laenge >= LIBRARY_TEXT_LIMIT:
-        hinweise.append(_BEOBACHTUNGSGRENZE_HINWEIS)
-    elemente, gesamt, kapp_hinweise = _leseelemente(momentaufnahme)
-    hinweise.extend(kapp_hinweise)
-    if gesamt > len(elemente):
-        hinweise.append(
-            f"Die Seite hat {gesamt} bedienbare Elemente, in der Tabelle stehen die ersten {len(elemente)}."
+    if full_length >= LIBRARY_TEXT_LIMIT:
+        collected_notes.append(_OBSERVATION_LIMIT_NOTE)
+    element_rows, total, cap_notes = _read_elements(snapshot)
+    collected_notes.extend(cap_notes)
+    if total > len(element_rows):
+        collected_notes.append(
+            f"The page has {total} operable elements, the table shows the first {len(element_rows)}."
         )
-    ausgelassen = seite.get("omitted_actions") or 0
-    if isinstance(ausgelassen, int) and ausgelassen > 0:
-        hinweise.append(
-            f"Die Bibliothek hat {ausgelassen} weitere Elemente gar nicht erst beobachtet, die "
-            "Seite ist dafür zu gross."
+    omitted = page.get("omitted_actions") or 0
+    if isinstance(omitted, int) and omitted > 0:
+        collected_notes.append(
+            f"The library did not observe {omitted} further elements at all, the page is too large for that."
         )
 
-    satz = (
-        f"Die Seite {erreicht} wurde gelesen: {len(text)} Zeichen sichtbarer Text und "
-        f"{len(elemente)} bedienbare Elemente. Es wurde nichts geklickt und nichts getippt."
+    sentence = (
+        f"The page {reached_url} was read: {len(text)} characters of visible text and "
+        f"{len(element_rows)} operable elements. Nothing was clicked and nothing was typed."
     )
     return ReadResult(
         status=RunStatus.DONE,
         ok=True,
-        summary=satz,
+        summary=sentence,
         start_url=start_url,
-        url=erreicht,
-        title=titel,
+        url=reached_url,
+        title=page_title,
         text=text,
-        text_truncated=gekuerzt,
+        text_truncated=was_shortened,
         text_chars=len(text),
-        text_total_chars=ganze_laenge,
-        elements=elemente,
-        elements_shown=len(elemente),
-        elements_total=gesamt,
-        redirected=umgeleitet,
-        duration_ms=dauer,
-        time_budget_s=zeit,
-        notes=tuple(dict.fromkeys(str(hinweis) for hinweis in hinweise if hinweis)),
+        text_total_chars=full_length,
+        elements=element_rows,
+        elements_shown=len(element_rows),
+        elements_total=total,
+        redirected=was_redirected,
+        duration_ms=elapsed,
+        time_budget_s=budget_s,
+        notes=tuple(dict.fromkeys(str(note) for note in collected_notes if note)),
     )
 
 
@@ -2019,71 +2010,70 @@ def read_page(
     environment: EnvironmentApplication | None = None,
     agent_factory: Callable[..., object] | None = None,
 ) -> ReadResult:
-    """Öffnet eine Seite, beobachtet sie einmal und gibt zurück, was dort steht.
+    """Opens a page, observes it once and returns what is on it.
 
-    Es wird nicht geklickt, nicht getippt und nichts ausgewählt: weder `predict`
-    noch `act` werden aufgerufen, es entsteht also auch kein Modellaufruf und
-    keine Kosten. Zurück kommen der sichtbare Text, auf `text_limit` Zeichen
-    gekürzt, und die Elementtabelle, die auch das Entscheidungsmodell sähe.
+    Nothing is clicked, nothing is typed and nothing is selected: neither
+    `predict` nor `act` is called, so there is no model call and no cost
+    either. What comes back is the visible text, shortened to `text_limit`
+    characters, and the element table the decision model would also see.
 
-    Die Domain-Treue gilt auch hier. Endet die Seite nach einer Weiterleitung
-    auf einer fremden Domain, hält der Vorgang an und gibt nichts von dort
-    zurück. Ein Wechsel innerhalb derselben Domain wird gelesen und im Ergebnis
-    vermerkt, verschwiegen wird er nicht.
+    The domain lock applies here as well. If the page ends up on a foreign
+    domain after a redirect, the operation stops and returns nothing from
+    there. A change within the same domain is read and recorded in the result,
+    it is not kept quiet.
 
-    Es läuft immer nur ein Vorgang gleichzeitig, `run_task()` und `read_page()`
-    teilen sich dieses Schloss, denn sie teilen sich den Browser, und es bleibt
-    nach einer Zeitüberschreitung so lange gehalten, bis der Arbeitsfaden
-    wirklich fertig ist. Der Agent wird in jedem Fall geschlossen. Diese
-    Funktion wirft nicht, jeder Ausgang ist ein `ReadResult`.
+    Only one operation executes at a time, `run_task()` and `read_page()` share
+    this lock because they share the browser, and after a timeout it stays held
+    until the worker thread is really done. The agent is closed in every case.
+    This function does not raise, every outcome is a `ReadResult`.
     """
     try:
-        adresse = sicherer_text(url or "").strip()
-        zeit, zeit_notes = _lese_zeitbudget(time_budget_s)
-        grenze, grenzen_notes = _textgrenze(text_limit)
-    except Exception as fehler:  # noqa: BLE001
-        satz = (
-            "Die Vorgaben für diesen Lesevorgang liessen sich nicht auswerten, deshalb wurde keine "
-            f"Seite geöffnet ({type(fehler).__name__}: "
-            f"{kurzfassung(sicherer_text(fehler) or 'ohne Text')})."
+        address = safe_text(url or "").strip()
+        budget_s, time_notes = _read_time_budget(time_budget_s)
+        limit, limit_notes = _text_limit(text_limit)
+    except Exception as exc:  # noqa: BLE001
+        sentence = (
+            "The settings for this read could not be evaluated, so no "
+            f"page was opened ({type(exc).__name__}: "
+            f"{condense(safe_text(exc) or 'no message')})."
         )
-        return _lese_ergebnis(sicherer_text(url), DEFAULT_READ_TIME_BUDGET_S, RunStatus.NOT_STARTED, satz)
+        return _read_result(safe_text(url), DEFAULT_READ_TIME_BUDGET_S, RunStatus.NOT_STARTED, sentence)
 
-    notizen = [*zeit_notes, *grenzen_notes]
-    if not adresse:
-        return _lese_ergebnis(
-            adresse,
-            zeit,
+    initial_notes = [*time_notes, *limit_notes]
+    if not address:
+        return _read_result(
+            address,
+            budget_s,
             RunStatus.NOT_STARTED,
-            "Es wurde keine Adresse angegeben, deshalb wurde keine Seite geöffnet.",
-            notes=notizen,
+            "No URL was given, so no page was opened.",
+            notes=initial_notes,
         )
 
-    if not _LAUF_SCHLOSS.acquire(blocking=False):
-        return _lese_ergebnis(adresse, zeit, RunStatus.NOT_STARTED, _GLEICHZEITIG_HINWEIS, notes=notizen)
-    faden: threading.Thread | None = None
+    if not _RUN_LOCK.acquire(blocking=False):
+        return _read_result(address, budget_s, RunStatus.NOT_STARTED, _CONCURRENT_NOTE, notes=initial_notes)
+    thread: threading.Thread | None = None
     try:
-        ergebnis, faden = _lies_seite(
-            adresse,
-            zeit,
-            grenze,
-            notizen,
+        result, thread = _perform_read(
+            address,
+            budget_s,
+            limit,
+            initial_notes,
             allow_domains=allow_domains,
             policy=policy,
             policy_path=policy_path,
             environment=environment,
             agent_factory=agent_factory,
         )
-        return ergebnis
+        return result
     finally:
-        _gib_schloss_frei(faden)
+        _release_run_lock(thread)
 
 
-def _lies_seite(
-    adresse: str,
-    zeit: float,
-    grenze: int,
-    notizen: Sequence[str],
+def _perform_read(
+    address: str,
+    budget_s: float,
+    limit: int,
+    initial_notes: Sequence[str],
     *,
     allow_domains: Iterable[str] | str | None,
     policy: Policy | None,
@@ -2091,129 +2081,130 @@ def _lies_seite(
     environment: EnvironmentApplication | None,
     agent_factory: Callable[..., object] | None,
 ) -> tuple[ReadResult, threading.Thread | None]:
-    """Der Lesevorgang selbst, mit geprüften Vorgaben und unter dem Lauf-Schloss.
+    """The read itself, with checked settings and under the run lock.
 
-    Gibt neben dem Ergebnis den Arbeitsfaden zurück, sofern einer gestartet
-    wurde, siehe `_gib_schloss_frei()`.
+    Returns the worker thread alongside the result, if one was started, see
+    `_release_run_lock()`.
     """
     try:
-        angewandt = environment if environment is not None else apply_environment()
-        bereit = bool(angewandt.ok)
-        umgebungs_notes = tuple(str(hinweis) for hinweis in (angewandt.notes or ()))
-    except Exception as fehler:  # noqa: BLE001
-        satz = (
-            "Die Voraussetzungen für einen Lesevorgang liessen sich nicht auswerten, deshalb wurde "
-            f"keine Seite geöffnet ({type(fehler).__name__}: "
-            f"{kurzfassung(sicherer_text(fehler) or 'ohne Text')})."
+        applied = environment if environment is not None else apply_environment()
+        ready = bool(applied.ok)
+        environment_notes = tuple(str(note) for note in (applied.notes or ()))
+    except Exception as exc:  # noqa: BLE001
+        sentence = (
+            "The prerequisites for a read could not be evaluated, so no "
+            f"page was opened ({type(exc).__name__}: "
+            f"{condense(safe_text(exc) or 'no message')})."
         )
-        return _lese_ergebnis(adresse, zeit, RunStatus.NOT_STARTED, satz, notes=notizen), None
+        return _read_result(address, budget_s, RunStatus.NOT_STARTED, sentence, notes=initial_notes), None
 
-    hinweise = [*notizen, *umgebungs_notes]
-    if not bereit:
-        return _lese_ergebnis(
-            adresse,
-            zeit,
+    collected_notes = [*initial_notes, *environment_notes]
+    if not ready:
+        return _read_result(
+            address,
+            budget_s,
             RunStatus.NOT_STARTED,
-            "Die Voraussetzungen für einen Lesevorgang stimmen nicht, deshalb wurde keine Seite "
-            "geöffnet. Die Hinweise sagen, was fehlt.",
-            notes=hinweise,
+            "The prerequisites for a read are not met, so no page was opened. The notes say what is missing.",
+            notes=collected_notes,
         ), None
 
     try:
-        wache = start_run(
-            adresse,
+        guard = start_run(
+            address,
             allow_domains,
             policy,
             policy_path=policy_path,  # type: ignore[arg-type]
         )
-        eingang = wache.check(adresse, Moment.BEFORE)
-    except Exception as fehler:  # noqa: BLE001
-        return _lese_ergebnis(
-            adresse, zeit, RunStatus.NOT_STARTED, translate_error(fehler), notes=hinweise
+        entry_check = guard.check(address, Moment.BEFORE)
+    except Exception as exc:  # noqa: BLE001
+        return _read_result(
+            address, budget_s, RunStatus.NOT_STARTED, translate_error(exc), notes=collected_notes
         ), None
 
-    hinweise.extend(_policy_hinweise(wache))
+    collected_notes.extend(_policy_notes(guard))
 
-    if not eingang.allowed or not eingang.may_interact:
-        return _lese_ergebnis(
-            adresse,
-            zeit,
+    if not entry_check.allowed or not entry_check.may_interact:
+        return _read_result(
+            address,
+            budget_s,
             RunStatus.STOPPED_DOMAIN,
-            f"Die Adresse taugt nicht als Leseauftrag, es wurde keine Seite geöffnet. {eingang.reason}",
-            notes=(*hinweise, *eingang.warnings),
-            domain_stop=_domain_stop(eingang),
+            f"The URL cannot be read, so no page was opened. {entry_check.reason}",
+            notes=(*collected_notes, *entry_check.warnings),
+            domain_stop=_domain_stop(entry_check),
         ), None
 
-    begonnen = time.monotonic()
-    sitzung = _Sitzung()
-    fertig = threading.Event()
-    geschlossen = threading.Event()
-    kasten: list[ReadResult] = []
-    schluss: list[bool] = []
-    fabrik = agent_factory or _standard_agent
+    started = time.monotonic()
+    session = _Session()
+    finished = threading.Event()
+    closed = threading.Event()
+    result_box: list[ReadResult] = []
+    close_outcome: list[bool] = []
+    factory = agent_factory or _default_agent
 
-    def arbeite() -> None:
-        # Der Riegel für die Standardausgabe gehört in den Faden selbst, siehe
-        # `_fuehre_aus()`.
-        with ohne_stdout():
+    def work() -> None:
+        # The latch for standard output belongs in the thread itself, see
+        # `_execute()`.
+        with stdout_to_stderr():
             try:
-                agent = fabrik(adresse, [READ_GOAL])
-                sitzung.uebernimm(agent)
-                kasten.append(_beobachte_einmal(agent, adresse, wache, zeit, grenze, hinweise, begonnen))
-            except BaseException as fehler:  # noqa: BLE001
-                satz = translate_error(fehler)
-                kasten.append(
-                    _lese_ergebnis(
-                        adresse,
-                        zeit,
+                agent = factory(address, [READ_GOAL])
+                session.adopt(agent)
+                result_box.append(
+                    _observe_once(agent, address, guard, budget_s, limit, collected_notes, started)
+                )
+            except BaseException as exc:  # noqa: BLE001
+                sentence = translate_error(exc)
+                result_box.append(
+                    _read_result(
+                        address,
+                        budget_s,
                         RunStatus.FAILED,
-                        satz,
-                        notes=hinweise,
-                        duration_ms=round((time.monotonic() - begonnen) * 1000),
-                        error=satz,
+                        sentence,
+                        notes=collected_notes,
+                        duration_ms=round((time.monotonic() - started) * 1000),
+                        error=sentence,
                     )
                 )
             finally:
-                fertig.set()
-                schluss.append(sitzung.schliesse())
-                geschlossen.set()
+                finished.set()
+                close_outcome.append(session.close())
+                closed.set()
 
-    faden = threading.Thread(target=arbeite, name=f"jev-mcp-read-{next(_LAUF_NUMMER)}", daemon=True)
-    faden.start()
-    beendet = fertig.wait(zeit)
-    if beendet and kasten:
-        ergebnis = kasten[0]
-        if not geschlossen.wait(_ABKLINGZEIT_S):
-            return _mit_lese_notiz(ergebnis, _TAB_UNKLAR_HINWEIS), faden
-        if schluss and not schluss[0]:
-            return _mit_lese_notiz(ergebnis, _TAB_OFFEN_HINWEIS), faden
-        return ergebnis, faden
-    if beendet:
-        return _lese_ergebnis(
-            adresse,
-            zeit,
+    thread = threading.Thread(target=work, name=f"jev-mcp-read-{next(_RUN_NUMBER)}", daemon=True)
+    thread.start()
+    completed = finished.wait(budget_s)
+    if completed and result_box:
+        result = result_box[0]
+        if not closed.wait(_SETTLE_TIME_S):
+            return _with_read_note(result, _TAB_UNCLEAR_NOTE), thread
+        if close_outcome and not close_outcome[0]:
+            return _with_read_note(result, _TAB_OPEN_NOTE), thread
+        return result, thread
+    if completed:
+        return _read_result(
+            address,
+            budget_s,
             RunStatus.FAILED,
-            _OHNE_ERGEBNIS_HINWEIS,
-            notes=hinweise,
-            duration_ms=round((time.monotonic() - begonnen) * 1000),
-            error=_OHNE_ERGEBNIS_HINWEIS,
-        ), faden
+            _NO_RESULT_NOTE,
+            notes=collected_notes,
+            duration_ms=round((time.monotonic() - started) * 1000),
+            error=_NO_RESULT_NOTE,
+        ), thread
 
-    erfolg = sitzung.schliesse()
-    fertig.wait(_ABKLINGZEIT_S)
-    return _lese_ergebnis(
-        adresse,
-        zeit,
+    closed_ok = session.close()
+    finished.wait(_SETTLE_TIME_S)
+    return _read_result(
+        address,
+        budget_s,
         RunStatus.STOPPED_TIME,
-        f"Die Seite war nach dem Zeitbudget von {zeit:g} Sekunden noch nicht gelesen, der Vorgang "
-        f"wurde abgebrochen. {_schlusssatz(sitzung, erfolg)}",
-        notes=hinweise,
-        duration_ms=round((time.monotonic() - begonnen) * 1000),
-    ), faden
+        f"The page had still not been read after the time budget of {budget_s:g} seconds, the "
+        f"operation was aborted. {_tab_sentence(session, closed_ok)}",
+        notes=collected_notes,
+        duration_ms=round((time.monotonic() - started) * 1000),
+    ), thread
 
 
-def _mit_lese_notiz(ergebnis: ReadResult, hinweis: str) -> ReadResult:
-    """Hängt einen Hinweis an ein fertiges Leseergebnis, jeden Wortlaut nur einmal."""
-    if hinweis in ergebnis.notes:
-        return ergebnis
-    return replace(ergebnis, notes=(*ergebnis.notes, hinweis))
+def _with_read_note(result: ReadResult, note: str) -> ReadResult:
+    """Appends a note to a finished read result, each wording only once."""
+    if note in result.notes:
+        return result
+    return replace(result, notes=(*result.notes, note))

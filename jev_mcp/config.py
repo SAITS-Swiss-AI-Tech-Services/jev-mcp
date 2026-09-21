@@ -1,31 +1,31 @@
-"""Voraussetzungen für einen jev-ultrafast-Lauf auflösen, anwenden und diagnostizieren.
+"""Resolve, apply and diagnose the prerequisites for a jev-ultrafast run.
 
-Befund aus `jev_ultrafast/model.py`, gelesen am 20.09.2026:
-Die Bibliothek liest ihre Variablen erst beim Aufruf, nicht beim Import. Auf
-Modulebene steht nur der httpx-Client, der keine Variable anfasst. Erst in
-`choose()` wird `os.environ["TYPESAFE_API_KEY"]` gelesen, dazu
-`os.environ.get("TYPESAFE_MODEL", "jev-latest")`. Erst in `field_text()` werden
-`TEXT_MODEL_API_KEY`, `TEXT_MODEL_BASE_URL` (Vorgabe `https://api.deepseek.com/v1`),
-`TEXT_MODEL` (Vorgabe `deepseek-chat`) und `TEXT_MODEL_REASONING` gelesen.
-Daraus folgt: es genügt, `os.environ` vor dem Aufruf zu setzen. Ob jev_ultrafast
-vorher oder nachher importiert wurde, spielt keine Rolle. `apply_environment()`
-setzt trotzdem Basis-URL und Modellnamen immer mit, denn die Vorgaben der
-Bibliothek zeigen auf DeepSeek. Ein Schlüssel eines anderen Anbieters würde
-sonst still gegen den falschen Endpunkt laufen.
+Finding from `jev_ultrafast/model.py`, read on 2026-09-20:
+The library reads its variables only when called, not at import time. At
+module level there is only the httpx client, which touches no variable. Only
+in `choose()` is `os.environ["TYPESAFE_API_KEY"]` read, along with
+`os.environ.get("TYPESAFE_MODEL", "jev-latest")`. Only in `field_text()` are
+`TEXT_MODEL_API_KEY`, `TEXT_MODEL_BASE_URL` (default `https://api.deepseek.com/v1`),
+`TEXT_MODEL` (default `deepseek-chat`) and `TEXT_MODEL_REASONING` read.
+It follows that setting `os.environ` before the call is enough. Whether
+jev_ultrafast was imported before or after does not matter. `apply_environment()`
+nevertheless always sets the base URL and the model name as well, because the
+library defaults point to DeepSeek. A key from another provider would
+otherwise silently run against the wrong endpoint.
 
-Reihenfolge der Auflösung für den Textmodell-Schlüssel: der Anbieter geht vor
-der Quelle. Zuerst zählt `TEXT_MODEL_API_KEY`, dann Kimi, dann DeepSeek, zuletzt
-OpenRouter, und innerhalb jeder Stufe gilt zuerst die Umgebung und danach die
-Konfigurationsdatei. Wer einen Schlüssel eigens für dieses Projekt in die Datei
-legt, meint diesen Anbieter, auch wenn in der Shell noch ein alter Schlüssel
-eines anderen Anbieters steht. Für `TYPESAFE_API_KEY` gibt es nur eine Variable,
-dort gilt schlicht Umgebung vor Datei.
+Resolution order for the text model key: the provider comes before the
+source. `TEXT_MODEL_API_KEY` counts first, then Kimi, then DeepSeek, and
+OpenRouter last, and within each tier the environment comes first and the
+configuration file second. Whoever puts a key into the file specifically for
+this project means that provider, even if an old key from another provider is
+still set in the shell. For `TYPESAFE_API_KEY` there is only one variable, so
+there it is simply environment before file.
 
-Geheimnisse verlassen dieses Modul nur über `apply_environment()`, das sie nach
-`os.environ` schreibt. Keine öffentliche Datenstruktur und keine Meldung dieses
-Moduls enthält einen Schlüsselwert oder ein Stück davon. Das gilt auch für die
-Basis-URL: nach aussen geht nur eine gesäuberte Fassung ohne Anmeldedaten, ohne
-Abfrage und ohne Fragment, denn beides sind übliche Verstecke für Geheimnisse.
+Secrets leave this module only through `apply_environment()`, which writes
+them to `os.environ`. No public data structure and no message of this module
+contains a key value or any piece of one. This also applies to the base URL:
+only a sanitized version without credentials, without query and without
+fragment goes out, because both are common hiding places for secrets.
 """
 
 from __future__ import annotations
@@ -42,46 +42,46 @@ from urllib.parse import urlsplit, urlunsplit
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "jev-mcp" / "env"
 
-SOURCE_ENVIRONMENT = "Umgebung"
+SOURCE_ENVIRONMENT = "environment"
 
 TYPESAFE_VARIABLE = "TYPESAFE_API_KEY"
 
-# Grössere Dateien werden nicht gelesen. Eine Konfigurationsdatei mit
-# Umgebungsvariablen ist nie so gross, alles darüber ist ein Versehen.
+# Larger files are not read. A configuration file of environment variables is
+# never that large, anything above this is a mistake.
 MAX_CONFIG_FILE_BYTES = 256 * 1024
 
-# Hartes Gesamtbudget für die Browser-Prüfung. browser_harness setzt sein
-# Zeitlimit je Socket-Aufruf, nicht für den ganzen Vorgang, deshalb braucht es
-# hier eine eigene Obergrenze.
+# Hard overall budget for the browser probe. browser_harness sets its time
+# limit per socket call, not for the whole operation, so a separate upper bound
+# is needed here.
 BROWSER_PROBE_BUDGET_SECONDS = 3.0
 
-# browser_harness gibt je Socket-Aufruf eine Sekunde. Antwortet der Daemon erst
-# kurz davor mit Nein, war das vermutlich sein Zeitlimit und keine echte
-# Auskunft, deshalb liegt die Schwelle knapp darunter.
+# browser_harness allows one second per socket call. If the daemon answers no
+# only shortly before that, it was probably its time limit and not a real
+# answer, so the threshold sits just below it.
 _DAEMON_SLOW_ANSWER_SECONDS = 0.9
 
-# Anbieter-Vorgaben. Base-URL und Modellname bleiben über TEXT_MODEL_BASE_URL
-# und TEXT_MODEL überschreibbar, ohne dass der Anbieter gewechselt wird.
+# Provider defaults. The base URL and the model name can still be overridden via
+# TEXT_MODEL_BASE_URL and TEXT_MODEL without switching the provider.
 KIMI = ("https://api.moonshot.ai/v1", "kimi-k3")
 DEEPSEEK = ("https://api.deepseek.com/v1", "deepseek-chat")
 OPENROUTER = ("https://openrouter.ai/api/v1", "inception/mercury-2.5")
 
-# Vorgabe der Bibliothek selbst, siehe Modul-Docstring. Gilt, wenn jemand
-# TEXT_MODEL_API_KEY setzt, ohne Base-URL und Modell dazuzuschreiben.
+# The library's own default, see the module docstring. Applies when someone
+# sets TEXT_MODEL_API_KEY without also setting a base URL and model.
 UPSTREAM_DEFAULT = DEEPSEEK
 
 
 @dataclass(frozen=True)
 class _Tier:
-    """Eine Stufe der Schlüsselsuche, eine Stufe je Anbieter."""
+    """One tier of the key search, one tier per provider."""
 
     variables: tuple[str, ...]
     defaults: tuple[str, str]
     provider: str | None
 
 
-# Erste Fundstelle gewinnt. Die Stufen werden von oben nach unten abgearbeitet,
-# innerhalb einer Stufe gilt je Variable zuerst die Umgebung und dann die Datei.
+# The first match wins. The tiers are processed from top to bottom, and within
+# a tier, for each variable, the environment comes first and then the file.
 TEXT_MODEL_TIERS: tuple[_Tier, ...] = (
     _Tier(("TEXT_MODEL_API_KEY",), UPSTREAM_DEFAULT, None),
     _Tier(("MOONSHOT_API_KEY", "KIMI_API_KEY"), KIMI, "kimi"),
@@ -91,23 +91,24 @@ TEXT_MODEL_TIERS: tuple[_Tier, ...] = (
 
 TEXT_MODEL_VARIABLES: tuple[str, ...] = tuple(name for tier in TEXT_MODEL_TIERS for name in tier.variables)
 
-# Anbietername nach Host der Basis-URL. So stimmt die Anzeige auch dann, wenn
-# jemand TEXT_MODEL_API_KEY zusammen mit einer eigenen Basis-URL setzt.
+# Provider name by host of the base URL. This keeps the display correct even
+# when someone sets TEXT_MODEL_API_KEY together with their own base URL.
 PROVIDERS_BY_HOST = {
     "api.moonshot.ai": "kimi",
     "api.deepseek.com": "deepseek",
     "openrouter.ai": "openrouter",
 }
 
-# Woran ein Modellname seines Anbieters zu erkennen ist. Nur für einen Hinweis,
-# nie für eine Entscheidung, denn Modellnamen sind frei wählbar. OpenRouter
-# fehlt bewusst, dort tragen die Namen den fremden Anbieter im Namen.
+# How a model name can be recognized as belonging to its provider. Used only
+# for a note, never for a decision, because model names can be chosen freely.
+# OpenRouter is deliberately missing, since its names carry the name of the
+# other provider.
 PROVIDER_MODEL_MARKERS = {
     "kimi": ("kimi", "moonshot"),
     "deepseek": ("deepseek",),
 }
 
-# Nicht geheime Zusatzvariablen, die aus der Datei mit übernommen werden.
+# Non-secret extra variables that are also taken over from the file.
 PASSTHROUGH_VARIABLES = ("TYPESAFE_MODEL", "TEXT_MODEL_REASONING")
 
 _SETTINGS_VARIABLES = ("TEXT_MODEL_BASE_URL", "TEXT_MODEL", *PASSTHROUGH_VARIABLES)
@@ -117,8 +118,8 @@ _ALL_VARIABLES = (
     *_SETTINGS_VARIABLES,
 )
 
-# Variablen, die apply_environment() setzt oder, wenn kein Wert vorliegt,
-# aus der Zielumgebung entfernt.
+# Variables that apply_environment() sets or, when there is no value, removes
+# from the target environment.
 _MANAGED_VARIABLES = (TYPESAFE_VARIABLE, "TEXT_MODEL_API_KEY", *PASSTHROUGH_VARIABLES)
 
 _NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -127,7 +128,7 @@ _EXPORT_PREFIX = re.compile(r"\Aexport\s+")
 
 @dataclass(frozen=True)
 class KeyStatus:
-    """Ob ein Schlüssel da ist und woher. Nie der Schlüssel selbst."""
+    """Whether a key is present and where it comes from. Never the key itself."""
 
     present: bool
     source: str | None
@@ -137,10 +138,10 @@ class KeyStatus:
 
 @dataclass(frozen=True)
 class TextModelAccess:
-    """Der Textmodell-Zugang ohne den Schlüssel.
+    """The text model access without the key.
 
-    `base_url` ist die gesäuberte Fassung: Schema, Host, Port und Pfad, sonst
-    nichts. Anmeldedaten, Abfrage und Fragment werden vorher entfernt.
+    `base_url` is the sanitized version: scheme, host, port and path, nothing
+    else. Credentials, query and fragment are removed beforehand.
     """
 
     present: bool
@@ -154,11 +155,11 @@ class TextModelAccess:
 
 @dataclass(frozen=True)
 class BrowserStatus:
-    """Zustand des Browser-Harness-Daemons.
+    """State of the browser-harness daemon.
 
-    `known` ist falsch, wenn die Prüfung in ihr Zeitbudget gelaufen ist. Dann
-    sagen `daemon_running` und `browser_connected` nichts aus und der Zustand
-    darf einen Lauf nicht blockieren.
+    `known` is false when the probe ran into its time budget. In that case
+    `daemon_running` and `browser_connected` say nothing, and the state must
+    not block a run.
     """
 
     daemon_running: bool
@@ -169,7 +170,7 @@ class BrowserStatus:
 
 @dataclass(frozen=True)
 class Diagnosis:
-    """Alles, was vor einem Lauf über die Voraussetzungen bekannt ist."""
+    """Everything that is known about the prerequisites before a run."""
 
     ready: bool
     typesafe: KeyStatus
@@ -184,11 +185,11 @@ class Diagnosis:
 
 @dataclass(frozen=True)
 class EnvironmentApplication:
-    """Ergebnis von `apply_environment()`. Enthält nur Namen, nie Werte.
+    """Result of `apply_environment()`. Contains only names, never values.
 
-    `ok` unterscheidet einen geglückten Lauf, bei dem es auch nichts zu tun
-    geben kann, von einem gescheiterten. Ist `ok` falsch, wurde die Umgebung
-    nicht verändert und `notes` sagt, woran es lag.
+    `ok` distinguishes a successful run, which may also have had nothing to
+    do, from a failed one. If `ok` is false, the environment was not changed
+    and `notes` says why.
     """
 
     ok: bool
@@ -198,10 +199,10 @@ class EnvironmentApplication:
 
 
 def display_path(path: object) -> str:
-    """Pfad für Menschen, mit ~ statt des Heimatverzeichnisses.
+    """Path for humans, with ~ instead of the home directory.
 
-    Verglichen wird auf Pfadebene, damit aus einem Verzeichnis, das nur zufällig
-    mit dem Heimatverzeichnis anfängt, kein falsches ~ wird.
+    The comparison happens at the path level, so that a directory which merely
+    happens to start with the home directory's name does not get a wrong ~.
     """
     try:
         candidate = Path(path)  # type: ignore[arg-type]
@@ -212,24 +213,24 @@ def display_path(path: object) -> str:
             return str(candidate)
         return str(Path("~") / relative)
     except Exception:
-        # Auch ein Pfadobjekt, dessen __fspath__ selbst fliegt, darf eine
-        # Diagnose nicht zum Absturz bringen.
+        # Even a path object whose own __fspath__ raises must not crash a
+        # diagnosis.
         try:
             return str(path)
         except Exception:
-            return "<unbrauchbarer Pfad>"
+            return "<unusable path>"
 
 
 def file_source(path: object) -> str:
-    """Quellenangabe für Werte, die aus der Konfigurationsdatei stammen."""
-    return f"Datei {display_path(path)}"
+    """Source label for values that come from the configuration file."""
+    return f"file {display_path(path)}"
 
 
 def sanitized_url(value: object) -> str | None:
-    """Die URL ohne Anmeldedaten, Abfrage und Fragment, sonst None.
+    """The URL without credentials, query and fragment, otherwise None.
 
-    Nur diese Fassung darf in eine Rückgabe oder in eine Meldung. Der Rohwert
-    kann Benutzername, Passwort oder einen Schlüssel in der Abfrage enthalten.
+    Only this version may go into a return value or a message. The raw value
+    can contain a user name, a password or a key in the query.
     """
     if not isinstance(value, str):
         return None
@@ -240,8 +241,8 @@ def sanitized_url(value: object) -> str | None:
     except ValueError:
         return None
     if not parts.netloc or not host:
-        # Ohne Netzteil ist es keine brauchbare Basis-URL, und was dann im Pfad
-        # steht, könnte ungeprüft Anmeldedaten enthalten.
+        # Without a network location it is not a usable base URL, and whatever
+        # is then in the path could contain unchecked credentials.
         return None
     if ":" in host:
         host = f"[{host}]"
@@ -252,21 +253,21 @@ def sanitized_url(value: object) -> str | None:
 
 
 def read_config_file(path: object) -> tuple[dict[str, str], tuple[str, ...]]:
-    """Liest `KEY=VALUE` je Zeile. Wirft nie, meldet Probleme als Hinweise.
+    """Reads one `KEY=VALUE` per line. Never raises, reports problems as notes.
 
-    Kommentarzeilen mit `#` und Leerzeilen werden übersprungen, ein führendes
-    `export ` wird entfernt, Anführungszeichen um Werte werden entfernt und ein
-    Kommentar am Zeilenende wird abgeschnitten. Zeilen mit einem Namen, der
-    nicht dem Muster `[A-Za-z_][A-Za-z0-9_]*` entspricht, zählen als
-    übersprungen, damit eine Datei in falscher Kodierung auffällt. Gelesen wird
-    nur eine gewöhnliche Datei bis `MAX_CONFIG_FILE_BYTES`, damit eine FIFO die
-    Diagnose nicht zum Stehen bringt. Eine fehlende Datei ist kein Problem und
-    erzeugt keinen Hinweis, eine unlesbare oder teilweise kaputte Datei schon.
+    Comment lines starting with `#` and blank lines are skipped, a leading
+    `export ` is removed, quotes around values are removed and a comment at
+    the end of a line is cut off. Lines with a name that does not match the
+    pattern `[A-Za-z_][A-Za-z0-9_]*` count as skipped, so that a file in the
+    wrong encoding gets noticed. Only a regular file up to
+    `MAX_CONFIG_FILE_BYTES` is read, so that a FIFO cannot bring the diagnosis
+    to a halt. A missing file is not a problem and produces no note, but an
+    unreadable or partly broken file does.
     """
     try:
         candidate = Path(path)  # type: ignore[arg-type]
     except Exception:
-        return {}, ("Der Pfad zur Konfigurationsdatei ist unbrauchbar, es wird keine Datei gelesen.",)
+        return {}, ("The path to the configuration file is unusable, so no file is read.",)
     label = display_path(candidate)
     try:
         info = candidate.stat()
@@ -274,23 +275,19 @@ def read_config_file(path: object) -> tuple[dict[str, str], tuple[str, ...]]:
         return {}, ()
     except OSError as exc:
         return {}, (
-            f"Die Konfigurationsdatei {label} liess sich nicht prüfen "
-            f"({type(exc).__name__}), sie wird deshalb nicht gelesen.",
+            f"The configuration file {label} could not be checked ({type(exc).__name__}), so it is not read.",
         )
     if not stat.S_ISREG(info.st_mode):
-        return {}, (f"Der Pfad {label} ist keine gewöhnliche Datei, er wird deshalb nicht gelesen.",)
+        return {}, (f"The path {label} is not a regular file, so it is not read.",)
     if info.st_size > MAX_CONFIG_FILE_BYTES:
         return {}, (
-            f"Die Konfigurationsdatei {label} ist mit {info.st_size} Bytes grösser als die "
-            f"erlaubten {MAX_CONFIG_FILE_BYTES} Bytes und wird deshalb nicht gelesen.",
+            f"The configuration file {label} is {info.st_size} bytes, which is larger than the "
+            f"allowed {MAX_CONFIG_FILE_BYTES} bytes, so it is not read.",
         )
     try:
         raw = candidate.read_text(encoding="utf-8-sig", errors="replace")
     except OSError as exc:
-        return {}, (
-            f"Die Konfigurationsdatei {label} ist vorhanden, "
-            f"konnte aber nicht gelesen werden ({type(exc).__name__}).",
-        )
+        return {}, (f"The configuration file {label} exists but could not be read ({type(exc).__name__}).",)
     values: dict[str, str] = {}
     skipped = 0
     for raw_line in raw.splitlines():
@@ -309,19 +306,19 @@ def read_config_file(path: object) -> tuple[dict[str, str], tuple[str, ...]]:
     notes: tuple[str, ...] = ()
     if skipped == 1:
         notes = (
-            f"In der Konfigurationsdatei {label} wurde 1 Zeile übersprungen, weil sie nicht dem "
-            "Muster NAME=WERT entspricht.",
+            f"In the configuration file {label}, 1 line was skipped because it does not match "
+            "the pattern NAME=VALUE.",
         )
     elif skipped:
         notes = (
-            f"In der Konfigurationsdatei {label} wurden {skipped} Zeilen übersprungen, weil sie "
-            "nicht dem Muster NAME=WERT entsprechen.",
+            f"In the configuration file {label}, {skipped} lines were skipped because they do "
+            "not match the pattern NAME=VALUE.",
         )
     return values, notes
 
 
 def _value_of(raw: str) -> str:
-    """Den Wert einer Zeile auspacken, Anführungszeichen und Kommentar weg."""
+    """Unpack the value of a line, dropping quotes and comment."""
     value = raw.strip()
     quote = value[:1]
     if quote in ('"', "'"):
@@ -333,7 +330,7 @@ def _value_of(raw: str) -> str:
 
 
 def _without_comment(value: str) -> str:
-    """Alles ab einem Kommentarzeichen abschneiden, das nach Leerraum steht."""
+    """Cut off everything from a comment marker that follows whitespace."""
     if value.startswith("#"):
         return ""
     cut = len(value)
@@ -353,7 +350,7 @@ def _clean(value: object) -> str | None:
 
 
 def _snapshot(env: Mapping[str, str] | None) -> dict[str, str]:
-    """Nur die Variablen abgreifen, die uns etwas angehen."""
+    """Pick up only the variables that concern us."""
     source = os.environ if env is None else env
     values: dict[str, str] = {}
     for name in _ALL_VARIABLES:
@@ -365,7 +362,7 @@ def _snapshot(env: Mapping[str, str] | None) -> dict[str, str]:
 
 @dataclass(frozen=True)
 class _Layers:
-    """Die beiden Fundorte in ihrer Reihenfolge, Umgebung zuerst."""
+    """The two places to look, in order, environment first."""
 
     env_values: dict[str, str] = field(default_factory=dict)
     file_values: dict[str, str] = field(default_factory=dict)
@@ -395,7 +392,7 @@ def _layers(env: Mapping[str, str] | None, config_path: object) -> tuple[_Layers
 
 
 def _host_provider(base_url: str) -> str | None:
-    """Anbietername nach Host, None wenn der Host unbekannt ist."""
+    """Provider name by host, None if the host is unknown."""
     try:
         host = (urlsplit(base_url).hostname or "").lower()
     except ValueError:
@@ -408,12 +405,12 @@ def _provider_name(base_url: str) -> str:
         host = (urlsplit(base_url).hostname or "").lower()
     except ValueError:
         host = ""
-    return PROVIDERS_BY_HOST.get(host, host or "unbekannt")
+    return PROVIDERS_BY_HOST.get(host, host or "unknown")
 
 
 @dataclass(frozen=True)
 class _TextModelPlan:
-    """Der aufgelöste Textmodell-Zugang, innen mit Schlüssel und Rohwerten."""
+    """The resolved text model access, internally with key and raw values."""
 
     secret: str | None = None
     variable: str | None = None
@@ -426,7 +423,7 @@ class _TextModelPlan:
 
 
 def _find_text_secret(layers: _Layers) -> tuple[str | None, str | None, str | None, _Tier]:
-    """Den Textmodell-Schlüssel finden. Anbieter vor Quelle, siehe Docstring."""
+    """Find the text model key. Provider before source, see the docstring."""
     ordered = layers.ordered()
     for tier in TEXT_MODEL_TIERS:
         for variable in tier.variables:
@@ -450,29 +447,28 @@ def _plan_text_model(layers: _Layers) -> _TextModelPlan:
         shown = sanitized_url(given)
         if shown is None:
             notes.append(
-                f"Die Basis-URL aus der Quelle {given_label} ist unbrauchbar, deshalb gilt die "
-                f"Vorgabe {sanitized_url(default_url)} des Anbieters."
+                f"The base URL from the source {given_label} is unusable, so the provider's "
+                f"default {sanitized_url(default_url)} applies."
             )
         else:
             found = _host_provider(shown)
             if tier.provider is not None and found is not None and found != tier.provider:
                 notes.append(
-                    f"Die Basis-URL {shown} aus der Quelle {given_label} gehört zum Anbieter "
-                    f"{found}, der Schlüssel stammt aber aus der Variable {variable} des Anbieters "
-                    f"{tier.provider}, deshalb gilt die Vorgabe {sanitized_url(default_url)}."
+                    f"The base URL {shown} from the source {given_label} belongs to the provider "
+                    f"{found}, but the key comes from the variable {variable} of the provider "
+                    f"{tier.provider}, so the default {sanitized_url(default_url)} applies."
                 )
             elif tier.provider is not None and found is None:
                 notes.append(
-                    f"Die Basis-URL {shown} aus der Quelle {given_label} gehört zu keinem bekannten "
-                    f"Anbieter, sie wird mit dem Schlüssel aus der Variable {variable} trotzdem "
-                    "verwendet."
+                    f"The base URL {shown} from the source {given_label} belongs to no known "
+                    f"provider, but it is still used with the key from the variable {variable}."
                 )
                 raw_base_url = given
             else:
                 raw_base_url = given
 
     base_url = sanitized_url(raw_base_url)
-    provider = tier.provider or (_provider_name(base_url) if base_url else "unbekannt")
+    provider = tier.provider or (_provider_name(base_url) if base_url else "unknown")
     model = layers.first("TEXT_MODEL")[0] or default_model
     mismatch = _model_mismatch(provider, model)
     if mismatch is not None:
@@ -490,7 +486,7 @@ def _plan_text_model(layers: _Layers) -> _TextModelPlan:
 
 
 def _model_mismatch(provider: str | None, model: str) -> str | None:
-    """Hinweis, wenn der Modellname offensichtlich zu einem anderen Anbieter gehört."""
+    """A note when the model name obviously belongs to another provider."""
     if provider is None or "/" in model:
         return None
     lowered = model.lower()
@@ -502,8 +498,8 @@ def _model_mismatch(provider: str | None, model: str) -> str | None:
             continue
         if any(lowered.startswith(marker) for marker in markers):
             return (
-                f"Der Modellname {model} sieht nach dem Anbieter {other} aus, angesprochen wird "
-                f"aber der Anbieter {provider}, bitte prüfe diese Kombination."
+                f"The model name {model} looks like it belongs to the provider {other}, but the "
+                f"requests go to the provider {provider}. Please check this combination."
             )
     return None
 
@@ -517,10 +513,7 @@ def _text_model_access(plan: _TextModelPlan) -> TextModelAccess:
             provider=None,
             model=None,
             base_url=None,
-            detail=(
-                "Es wurde kein Textmodell-Schlüssel gefunden, weder in der Umgebung noch in der "
-                "Konfigurationsdatei."
-            ),
+            detail=("No text model key was found, neither in the environment nor in the configuration file."),
         )
     return TextModelAccess(
         present=True,
@@ -530,8 +523,8 @@ def _text_model_access(plan: _TextModelPlan) -> TextModelAccess:
         model=plan.model,
         base_url=plan.base_url,
         detail=(
-            f"Der Textmodell-Zugang stammt aus der Quelle {plan.source} über die Variable "
-            f"{plan.variable}, Anbieter {plan.provider}, Modell {plan.model}."
+            f"The text model access comes from the source {plan.source} via the variable "
+            f"{plan.variable}, provider {plan.provider}, model {plan.model}."
         ),
     )
 
@@ -540,7 +533,7 @@ def resolve_text_model(
     env: Mapping[str, str] | None = None,
     config_path: object | None = None,
 ) -> TextModelAccess:
-    """Den Textmodell-Zugang auflösen, ohne den Schlüssel herauszugeben."""
+    """Resolve the text model access without handing out the key."""
     layers, _ = _layers(env, DEFAULT_CONFIG_PATH if config_path is None else config_path)
     return _text_model_access(_plan_text_model(layers))
 
@@ -553,15 +546,15 @@ def _typesafe_status(layers: _Layers) -> KeyStatus:
             source=None,
             variable=None,
             detail=(
-                "Der TypeSafe-Schlüssel fehlt, weder die Umgebung noch die Konfigurationsdatei "
-                f"enthalten {TYPESAFE_VARIABLE}."
+                "The TypeSafe key is missing, neither the environment nor the configuration file "
+                f"contains {TYPESAFE_VARIABLE}."
             ),
         )
     return KeyStatus(
         present=True,
         source=label,
         variable=TYPESAFE_VARIABLE,
-        detail=f"Der TypeSafe-Schlüssel wurde gefunden, Quelle {label}, Variable {TYPESAFE_VARIABLE}.",
+        detail=f"The TypeSafe key was found, source {label}, variable {TYPESAFE_VARIABLE}.",
     )
 
 
@@ -569,26 +562,26 @@ def resolve_typesafe(
     env: Mapping[str, str] | None = None,
     config_path: object | None = None,
 ) -> KeyStatus:
-    """Den TypeSafe-Schlüssel auflösen, ohne den Schlüssel herauszugeben."""
+    """Resolve the TypeSafe key without handing out the key."""
     layers, _ = _layers(env, DEFAULT_CONFIG_PATH if config_path is None else config_path)
     return _typesafe_status(layers)
 
 
 def probe_browser() -> BrowserStatus:
-    """Prüft den Browser-Harness, ohne etwas zu starten.
+    """Probes browser-harness without starting anything.
 
-    Bewusst nicht `browser_harness.admin.ensure_daemon`: die Funktion startet
-    einen Daemon, startet notfalls Chrome und wartet dabei bis zu sechzig
-    Sekunden. Für eine Diagnose ohne Nebenwirkung ist das der falsche Weg.
-    `daemon_alive()` macht einen Ping, `daemon_browser_ready()` fragt den
-    laufenden Daemon nach seiner Browser-Verbindung. Beide setzen ihr Zeitlimit
-    von einer Sekunde je Socket-Aufruf, nicht für den ganzen Vorgang, deshalb
-    deckelt `_browser_status()` die Prüfung zusätzlich mit
+    Deliberately not `browser_harness.admin.ensure_daemon`: that function
+    starts a daemon, starts Chrome if necessary and waits up to sixty seconds
+    while doing so. For a diagnosis without side effects that is the wrong
+    path. `daemon_alive()` sends a ping, `daemon_browser_ready()` asks the
+    running daemon about its browser connection. Both set their time limit of
+    one second per socket call, not for the whole operation, so
+    `_browser_status()` additionally caps the probe with
     `BROWSER_PROBE_BUDGET_SECONDS`.
 
-    Kommt das Nein auf die Frage nach der Browser-Verbindung erst kurz vor
-    diesem Zeitlimit, war vermutlich der Daemon beschäftigt und es ist keine
-    Auskunft. Dieser Fall gilt als unbekannt und blockiert keinen Lauf.
+    If the no to the question about the browser connection arrives only
+    shortly before this time limit, the daemon was probably busy and it is not
+    a real answer. This case counts as unknown and does not block a run.
     """
     from browser_harness.admin import daemon_alive, daemon_browser_ready
 
@@ -596,7 +589,7 @@ def probe_browser() -> BrowserStatus:
         return BrowserStatus(
             daemon_running=False,
             browser_connected=False,
-            detail="Der Browser-Harness-Daemon läuft nicht und antwortet deshalb auf keinen Ping.",
+            detail="The browser-harness daemon is not running and therefore does not answer any ping.",
         )
     started = time.monotonic()
     ready = daemon_browser_ready()
@@ -607,32 +600,32 @@ def probe_browser() -> BrowserStatus:
                 daemon_running=True,
                 browser_connected=False,
                 detail=(
-                    "Der Browser-Harness-Daemon läuft, hat aber nicht innerhalb seines Zeitlimits "
-                    "geantwortet, sein Browserzustand ist deshalb unbekannt."
+                    "The browser-harness daemon is running but did not answer within its time "
+                    "limit, so its browser state is unknown."
                 ),
                 known=False,
             )
         return BrowserStatus(
             daemon_running=True,
             browser_connected=False,
-            detail="Der Browser-Harness-Daemon läuft, es ist aber kein Chrome mit ihm verbunden.",
+            detail="The browser-harness daemon is running, but no Chrome is connected to it.",
         )
     return BrowserStatus(
         daemon_running=True,
         browser_connected=True,
-        detail="Der Browser-Harness-Daemon läuft und ein Chrome ist mit ihm verbunden.",
+        detail="The browser-harness daemon is running and a Chrome instance is connected to it.",
     )
 
 
-_UNKNOWN_BROWSER_DETAIL = "Der Zustand des Browser-Harness liess sich nicht ermitteln."
+_UNKNOWN_BROWSER_DETAIL = "The state of browser-harness could not be determined."
 
 
 def _browser_status(probe: Callable[[], BrowserStatus] | None) -> tuple[BrowserStatus, tuple[str, ...]]:
-    """Die Browser-Prüfung mit hartem Gesamtbudget ausführen.
+    """Run the browser probe under a hard overall budget.
 
-    Die Prüfung läuft in einem eigenen Faden. Läuft das Budget ab, ist der
-    Zustand unbekannt. Unbekannt ist nicht dasselbe wie nicht verbunden und
-    blockiert deshalb keinen Lauf.
+    The probe runs in its own thread. If the budget runs out, the state is
+    unknown. Unknown is not the same as not connected and therefore does not
+    block a run.
     """
     box: dict[str, object] = {}
 
@@ -650,16 +643,13 @@ def _browser_status(probe: Callable[[], BrowserStatus] | None) -> tuple[BrowserS
             BrowserStatus(
                 daemon_running=False,
                 browser_connected=False,
-                detail=(
-                    "Die Prüfung des Browser-Harness hat zu lange gedauert, sein Zustand ist "
-                    "deshalb unbekannt."
-                ),
+                detail=("The browser-harness probe took too long, so its state is unknown."),
                 known=False,
             ),
             (
-                "Die Prüfung des Browser-Harness wurde nach "
-                f"{BROWSER_PROBE_BUDGET_SECONDS} Sekunden abgebrochen, der Browserzustand gilt "
-                "deshalb als unbekannt und blockiert keinen Lauf.",
+                "The browser-harness probe was aborted after "
+                f"{BROWSER_PROBE_BUDGET_SECONDS} seconds, so the browser state counts as unknown "
+                "and does not block a run.",
             ),
         )
     error = box.get("error")
@@ -671,8 +661,8 @@ def _browser_status(probe: Callable[[], BrowserStatus] | None) -> tuple[BrowserS
                 detail=_UNKNOWN_BROWSER_DETAIL,
             ),
             (
-                "Die Prüfung des Browser-Harness ist mit einem Fehler abgebrochen "
-                f"({type(error).__name__}), der Browser gilt deshalb als nicht verfügbar.",
+                "The browser-harness probe failed with an error "
+                f"({type(error).__name__}), so the browser counts as unavailable.",
             ),
         )
     status = box.get("status")
@@ -683,12 +673,10 @@ def _browser_status(probe: Callable[[], BrowserStatus] | None) -> tuple[BrowserS
                 browser_connected=False,
                 detail=_UNKNOWN_BROWSER_DETAIL,
             ),
-            ("Die Prüfung des Browser-Harness hat eine unerwartete Antwort geliefert.",),
+            ("The browser-harness probe returned an unexpected answer.",),
         )
     if not status.known:
-        return status, (
-            "Der Zustand des Browser-Harness ist unbekannt, der Agent versucht den Lauf trotzdem.",
-        )
+        return status, ("The state of browser-harness is unknown, but the agent attempts the run anyway.",)
     return status, ()
 
 
@@ -698,27 +686,27 @@ def _blocked_operations(
     blocked: list[str] = []
     if not typesafe.present:
         blocked.append(
-            "Kein Browser-Lauf ist möglich, weil der TypeSafe-Schlüssel fehlt. Ohne ihn kann der "
-            "Agent keine einzige Aktion auswählen, auch nicht Klicken oder Scrollen. Lege "
-            f"{TYPESAFE_VARIABLE} in die Umgebung oder in die Datei {display_path(DEFAULT_CONFIG_PATH)}."
+            "No browser run is possible because the TypeSafe key is missing. Without it the "
+            "agent cannot choose a single action, not even clicking or scrolling. Put "
+            f"{TYPESAFE_VARIABLE} into the environment or into the file {display_path(DEFAULT_CONFIG_PATH)}."
         )
     if not text_model.present:
         blocked.append(
-            "Tippen in Felder ist nicht möglich, weil kein Textmodell-Schlüssel gefunden wurde. "
-            "Klicken, Scrollen, Navigieren und die Auswahl in Dropdowns funktionieren weiterhin. "
-            "Formulare und Suchfelder bleiben bis dahin leer."
+            "Typing into fields is not possible because no text model key was found. "
+            "Clicking, scrolling, navigating and selecting from dropdowns still work. "
+            "Forms and search fields stay empty until a text model key is available."
         )
     if not browser.known:
         return tuple(blocked)
     if not browser.daemon_running:
         blocked.append(
-            "Kein Browser-Lauf ist möglich, weil der Browser-Harness-Daemon nicht läuft. Starte "
-            "ihn, danach kann der Agent die Seite öffnen und bedienen."
+            "No browser run is possible because the browser-harness daemon is not running. Start "
+            "it, and the agent can then open and operate the page."
         )
     elif not browser.browser_connected:
         blocked.append(
-            "Kein Browser-Lauf ist möglich, weil der Daemon zwar läuft, aber kein Chrome mit ihm "
-            "verbunden ist. Verbinde Chrome, danach funktionieren Klicken, Tippen und Navigieren."
+            "No browser run is possible because the daemon is running, but no Chrome is connected "
+            "to it. Connect Chrome, and clicking, typing and navigating will work."
         )
     return tuple(blocked)
 
@@ -726,18 +714,18 @@ def _blocked_operations(
 def _summary(ready: bool, text_model: TextModelAccess, browser: BrowserStatus) -> str:
     if ready and not browser.known:
         return (
-            "Ein Lauf ist möglich, der Zustand des Browsers liess sich aber nicht klären, der "
-            "Agent versucht es trotzdem."
+            "A run is possible, but the state of the browser could not be determined, so the "
+            "agent will try anyway."
         )
     if ready and text_model.present:
         return (
-            "Alle Voraussetzungen sind erfüllt, der Agent kann klicken, tippen, scrollen und "
-            f"navigieren. Getippt wird mit dem Anbieter {text_model.provider} und dem Modell "
+            "All prerequisites are met, the agent can click, type, scroll and navigate. "
+            f"Typing uses the provider {text_model.provider} and the model "
             f"{text_model.model}."
         )
     if ready:
-        return "Ein Lauf ist möglich, aber eingeschränkt, weil kein Textmodell-Zugang gefunden wurde."
-    return "Ein Lauf ist im Moment nicht möglich, die Gründe stehen in der Liste der blockierten Operationen."
+        return "A run is possible, but limited, because no text model access was found."
+    return "A run is not possible at the moment, the reasons are in the list of blocked operations."
 
 
 def diagnose(
@@ -745,11 +733,11 @@ def diagnose(
     config_path: object | None = None,
     probe_browser: Callable[[], BrowserStatus] | None = None,
 ) -> Diagnosis:
-    """Den Zustand aller Voraussetzungen ermitteln. Wirft unter keinen Umständen.
+    """Determine the state of all prerequisites. Never raises, under any circumstances.
 
-    Jeder Fehler landet als ganzer Satz in `notes`, statt nach oben zu fliegen.
-    Der Parametername verdeckt bewusst die Funktion `probe_browser`, denn er
-    benennt genau deren Rolle.
+    Every error ends up as a whole sentence in `notes` instead of propagating.
+    The parameter name deliberately shadows the function `probe_browser`,
+    because it names exactly that function's role.
     """
     path = DEFAULT_CONFIG_PATH if config_path is None else config_path
     notes: list[str] = []
@@ -769,14 +757,14 @@ def diagnose(
         text_model = _text_model_access(plan)
     except Exception as exc:
         notes.append(
-            "Die Umgebung und die Konfigurationsdatei liessen sich nicht auswerten "
-            f"({type(exc).__name__}), es wird deshalb angenommen, dass kein Schlüssel vorliegt."
+            "The environment and the configuration file could not be evaluated "
+            f"({type(exc).__name__}), so it is assumed that no key is present."
         )
         typesafe = KeyStatus(
             present=False,
             source=None,
             variable=None,
-            detail="Der TypeSafe-Schlüssel konnte nicht ermittelt werden.",
+            detail="The TypeSafe key could not be determined.",
         )
         text_model = TextModelAccess(
             present=False,
@@ -785,11 +773,11 @@ def diagnose(
             provider=None,
             model=None,
             base_url=None,
-            detail="Der Textmodell-Zugang konnte nicht ermittelt werden.",
+            detail="The text model access could not be determined.",
         )
     browser, browser_notes = _browser_status(probe_browser)
     notes.extend(browser_notes)
-    # Ein unbekannter Browserzustand ist kein Nein und blockiert deshalb nicht.
+    # An unknown browser state is not a no and therefore does not block.
     browser_ok = not browser.known or (browser.daemon_running and browser.browser_connected)
     ready = bool(typesafe.present and browser_ok)
     return Diagnosis(
@@ -808,7 +796,7 @@ def diagnose(
 def _plan_environment(
     env: Mapping[str, str] | None, path: object
 ) -> tuple[dict[str, str], list[str], tuple[str, ...]]:
-    """Alle Werte vorbereiten, bevor auch nur einer gesetzt wird."""
+    """Prepare all values before even one of them is set."""
     layers, _ = _layers(env, path)
     values: dict[str, str] = {}
     remove: list[str] = []
@@ -835,16 +823,16 @@ def _plan_environment(
 
 
 def _unusable(name: str, value: object) -> str | None:
-    """Prüft einen Wert, bevor er gesetzt wird. Nennt nie den Wert selbst."""
+    """Checks a value before it is set. Never names the value itself."""
     if not isinstance(value, str):
-        return f"Der Wert für die Variable {name} ist keine Zeichenkette und wird deshalb nicht gesetzt."
+        return f"The value for the variable {name} is not a string and is therefore not set."
     if "\x00" in value:
         return (
-            f"Der Wert für die Variable {name} enthält ein Nullbyte und lässt sich deshalb nicht "
-            "in die Umgebung schreiben."
+            f"The value for the variable {name} contains a null byte and therefore cannot be "
+            "written to the environment."
         )
     if "=" in name or not _NAME_PATTERN.match(name):
-        return f"Der Name {name} ist als Umgebungsvariable nicht zulässig und wird nicht gesetzt."
+        return f"The name {name} is not allowed as an environment variable and is not set."
     return None
 
 
@@ -853,18 +841,18 @@ def apply_environment(
     config_path: object | None = None,
     environ: MutableMapping[str, str] | None = None,
 ) -> EnvironmentApplication:
-    """Schreibt die aufgelösten Werte nach `os.environ`. Wirft nie.
+    """Writes the resolved values to `os.environ`. Never raises.
 
-    Muss laufen, bevor `jev_ultrafast` benutzt wird, denn die Bibliothek liest
-    ihre Variablen beim Aufruf aus der Umgebung, siehe Modul-Docstring.
+    Must run before `jev_ultrafast` is used, because the library reads its
+    variables from the environment when called, see the module docstring.
 
-    Es wird erst alles vorbereitet und geprüft und danach in einem Rutsch
-    gesetzt. Scheitert dabei etwas, wird der vorherige Zustand wiederhergestellt
-    und `ok` ist falsch. Eine halb gesetzte Umgebung, in der zum Beispiel der
-    Schlüssel des einen Anbieters auf die Basis-URL eines anderen trifft, kann
-    es dadurch nicht geben. Variablen, für die kein brauchbarer Wert vorliegt,
-    werden aus der Zielumgebung entfernt, damit die Diagnose und die Wirklichkeit
-    dasselbe sagen. Gibt nur Namen zurück, niemals Werte.
+    Everything is first prepared and checked and then set in one go. If
+    anything fails along the way, the previous state is restored and `ok` is
+    false. A half-set environment, in which for example one provider's key
+    meets another provider's base URL, therefore cannot occur. Variables for
+    which there is no usable value are removed from the target environment, so
+    that the diagnosis and reality say the same thing. Returns only names,
+    never values.
     """
     target = os.environ if environ is None else environ
     path = DEFAULT_CONFIG_PATH if config_path is None else config_path
@@ -873,10 +861,7 @@ def apply_environment(
     except Exception as exc:
         return EnvironmentApplication(
             ok=False,
-            notes=(
-                "Die Umgebung liess sich nicht vorbereiten "
-                f"({type(exc).__name__}), es wurde deshalb nichts gesetzt.",
-            ),
+            notes=(f"The environment could not be prepared ({type(exc).__name__}), so nothing was set.",),
         )
 
     problems = [problem for name, value in values.items() if (problem := _unusable(name, value))]
@@ -891,8 +876,8 @@ def apply_environment(
             ok=False,
             notes=(
                 *notes,
-                "Der bisherige Zustand der Umgebung liess sich nicht sichern "
-                f"({type(exc).__name__}), es wurde deshalb nichts gesetzt.",
+                "The previous state of the environment could not be saved "
+                f"({type(exc).__name__}), so nothing was set.",
             ),
         )
 
@@ -912,8 +897,8 @@ def apply_environment(
             ok=False,
             notes=(
                 *notes,
-                "Das Setzen der Umgebungsvariablen ist fehlgeschlagen "
-                f"({type(exc).__name__}), es wurde deshalb keine einzige Variable verändert.",
+                "Setting the environment variables failed "
+                f"({type(exc).__name__}), so not a single variable was changed.",
                 *rollback,
             ),
         )
@@ -923,7 +908,7 @@ def apply_environment(
 def _rollback(
     target: MutableMapping[str, str], touched: list[str], before: dict[str, str]
 ) -> tuple[str, ...]:
-    """Den gesicherten Zustand zurückschreiben, so weit es geht."""
+    """Write the saved state back, as far as possible."""
     failed: list[str] = []
     for name in touched:
         try:
@@ -934,8 +919,5 @@ def _rollback(
         except Exception:
             failed.append(name)
     if failed:
-        return (
-            "Der vorherige Zustand liess sich für diese Variablen nicht wiederherstellen: "
-            f"{', '.join(failed)}.",
-        )
+        return (f"The previous state could not be restored for these variables: {', '.join(failed)}.",)
     return ()

@@ -1,49 +1,48 @@
-"""Die MCP-Schicht: drei Werkzeuge über stdio.
+"""The MCP layer: three tools over stdio.
 
-Dieser Modul ist dünn. Er entscheidet nichts über Browser, Domains oder
-Budgets, das tun `config.py`, `guards.py` und `runner.py`. Er tut vier Dinge:
+This module is thin. It decides nothing about browsers, domains or budgets;
+`config.py`, `guards.py` and `runner.py` do that. It does four things:
 
-1. Er wendet die Umgebung **genau einmal** an. `apply_environment()` schreibt
-   prozessweit in `os.environ`, und der Prozess ist hier der Server, nicht der
-   einzelne Aufruf. Das Ergebnis wird festgehalten und an jeden Lauf
-   weitergereicht. Ist es nicht in Ordnung, steht das in **jeder** Antwort,
-   nicht nur in der ersten, denn ein Modell liest selten die erste.
-2. Er prüft die Vorgaben, bevor sie weitergehen. Alles kommt als JSON von einem
-   Modell. `run_task()` fängt zwar jede Fehleingabe ab, aber ein klarer Satz an
-   der Tür ist besser als ein Ergebnis mit `not_started`, das erst gelesen
-   werden muss.
-3. Er macht aus jedem Ergebnis eine Struktur, die sich als UTF-8 senden lässt.
-   Ein `NaN` in einer Zuversicht der Bibliothek ergäbe sonst `NaN` im JSON, und
-   das ist kein gültiges JSON. Ein einsames Surrogat aus `os.environ` liesse
-   pydantic beim Serialisieren werfen, und zwar erst nach der Rückgabe des
-   Werkzeugs, wo es niemand mehr erklären kann.
-4. Er hilft, die Standardausgabe frei zu halten. Bei stdio ist sie der
-   Protokollkanal, und alles, was sonst dorthin geht, zerstört die Verbindung.
+1. It applies the environment **exactly once**. `apply_environment()` writes
+   into `os.environ` for the whole process, and the process here is the
+   server, not the single call. The result is kept and passed on to every run.
+   If it is not in order, that is stated in **every** response, not only in
+   the first one, because a model rarely reads the first one.
+2. It checks the inputs before they go any further. Everything arrives as JSON
+   from a model. `run_task()` does catch every bad input, but a clear sentence
+   at the door is better than a result with `not_started` that first has to be
+   read.
+3. It turns every result into a structure that can be sent as UTF-8. A `NaN`
+   in a confidence value from the library would otherwise become `NaN` in the
+   JSON, and that is not valid JSON. A lone surrogate from `os.environ` would
+   make pydantic raise during serialization, and only after the tool has
+   returned, where nobody can explain it any more.
+4. It helps keep standard output clean. With stdio, standard output is the
+   protocol channel, and anything else that goes there breaks the connection.
 
-Zur Standardausgabe im Einzelnen, ehrlich gerechnet
----------------------------------------------------
-Der eigentliche Riegel gehört nicht diesem Projekt. Das SDK (mcp 2.2.0,
-`mcp/server/stdio.py`) lenkt den Dateideskriptor 1 während des Betriebs auf
-stderr um und bedient die Leitung aus einer privaten Kopie. Ein `print`, ein
-`os.write(1, ...)` und selbst ein Unterprozess landen dadurch bereits dort, wo
-sie hingehören. Fällt dieser fremde Riegel weg, etwa in einer Umgebung, in der
-`sys.stdout` gar nicht auf Deskriptor 1 liegt, greifen nur noch zwei
-Teilabdeckungen:
+Standard output in detail, counted honestly
+-------------------------------------------
+The actual barrier does not belong to this project. The SDK (mcp 2.2.0,
+`mcp/server/stdio.py`) redirects file descriptor 1 to stderr while it runs and
+serves the connection from a private copy. A `print`, an `os.write(1, ...)` and
+even a subprocess therefore already end up where they belong. If that foreign
+barrier is missing, for example in an environment where `sys.stdout` does not
+sit on descriptor 1 at all, only two partial covers remain:
 
-* `runner.ohne_stdout()` legt `sys.stdout` auf stderr, solange ein
-  Werkzeugaufruf oder ein Arbeitsfaden läuft. Das fasst `sys.stdout` an, nicht
-  den Deskriptor: ein `os.write(1, ...)` und ein Unterprozess gehen daran
-  vorbei. Der Riegel liegt bewusst auch im Arbeitsfaden, denn der überlebt das
-  Zeitbudget und damit den Werkzeugaufruf.
-* `main()` legt das Protokollieren ausdrücklich auf stderr.
+* `runner.stdout_to_stderr()` points `sys.stdout` at stderr while a tool call
+  or a worker thread is running. It touches `sys.stdout`, not the descriptor:
+  an `os.write(1, ...)` and a subprocess get past it. The barrier deliberately
+  sits in the worker thread as well, because that thread outlives the time
+  budget and with it the tool call.
+* `main()` explicitly sends logging to stderr.
 
-Ein `print` steht in diesem Modul nicht, und zwei Tests halten die Zusage gegen
-die echte Leitung: einer im Prozess für den Faden, der das Budget überlebt,
-einer als Unterprozess über echtes stdio.
+This module contains no `print`, and two tests hold that promise against the
+real connection: one in process for the thread that outlives the budget, one
+as a subprocess over real stdio.
 
-Die Werkzeugbeschreibungen sind englisch, weil sie ein Modell liest und nicht
-ein Mensch. Die Rückgabetexte sind deutsch, weil sie am Ende beim Nutzer
-ankommen. Beides ist Absicht.
+The tool descriptions are written for a model, which reads them to pick a
+tool. The texts in results are written for the person at the end of the
+chain, because that is where they arrive. Both are in English.
 """
 
 import dataclasses
@@ -73,15 +72,15 @@ __all__ = [
 
 SERVER_NAME = "jev-mcp"
 
-MAX_URL_LAENGE = 2048
-MAX_ZIELE = 20
-MAX_ZIEL_LAENGE = 2000
+MAX_URL_LENGTH = 2048
+MAX_GOALS = 20
+MAX_GOAL_LENGTH = 2000
 MAX_ALLOW_DOMAINS = 50
-MAX_DOMAIN_LAENGE = 253
+MAX_DOMAIN_LENGTH = 253
 
-UMGEBUNG_WARNUNG = (
-    "Die Umgebung für den Browser-Agenten liess sich nicht setzen, deshalb kann kein Lauf starten. "
-    "Unter «environment» steht, woran es liegt."
+ENVIRONMENT_WARNING = (
+    "The environment for the browser agent could not be set up, so no run can start. "
+    'The "environment" entry says why.'
 )
 
 INSTRUCTIONS = (
@@ -131,7 +130,7 @@ BROWSER_READ_DESCRIPTION = (
     "user already has. Wrong when anything has to be clicked or filled in (use browser_task), and "
     "wasteful for public pages that need no login (use a web fetch or search tool). Redirects are "
     "followed but verified: landing on another registrable domain is reported, and none of that "
-    "page's text, elements, title or address is returned; widen that with `allow_domains`. The "
+    "page's text, elements, title or URL is returned; widen that with `allow_domains`. The "
     "underlying library observes at most 6000 characters of visible text and cuts a longer page "
     "before `text_limit` (default 4000) applies, so the answer reports how long the observed text "
     "was and warns when it reached that ceiling. Labels and field values are capped at 200 "
@@ -143,325 +142,319 @@ BROWSER_READ_DESCRIPTION = (
 
 
 # ---------------------------------------------------------------------------
-# Die Umgebung, genau einmal
+# The environment, exactly once
 # ---------------------------------------------------------------------------
 
-_UMGEBUNG: EnvironmentApplication | None = None
-_UMGEBUNG_SCHLOSS = Lock()
-_SCHNAPPSCHUSS: dict[str, str] | None = None
-_KONFIG_STAND: tuple[object, ...] | None = None
+_ENVIRONMENT: EnvironmentApplication | None = None
+_ENVIRONMENT_LOCK = Lock()
+_SNAPSHOT: dict[str, str] | None = None
+_CONFIG_STATE: tuple[object, ...] | None = None
 
 
-def _konfig_stand() -> tuple[object, ...]:
-    """Ein Abbild der Konfigurationsdatei, an dem eine Änderung erkennbar ist.
+def _config_state() -> tuple[object, ...]:
+    """A fingerprint of the config file that shows whether it has changed.
 
-    Gibt `(vorhanden, Änderungszeit, Grösse)` zurück. Fehlt die Datei oder
-    lässt sie sich nicht abfragen, steht das ebenfalls darin, statt dass hier
-    etwas wirft.
+    Returns `(exists, modification time, size)`. If the file is missing or
+    cannot be queried, that is recorded in the tuple as well, instead of
+    anything raising here.
     """
     try:
-        zustand = DEFAULT_CONFIG_PATH.stat()
+        stat_result = DEFAULT_CONFIG_PATH.stat()
     except OSError:
         return (False, 0, 0)
-    return (True, zustand.st_mtime_ns, zustand.st_size)
+    return (True, stat_result.st_mtime_ns, stat_result.st_size)
 
 
 def environment() -> EnvironmentApplication:
-    """Das einmal angewandte Ergebnis von `apply_environment()`.
+    """The result of `apply_environment()`, applied once.
 
-    Beim ersten Zugriff wird die Umgebung gesetzt, danach wird nur noch
-    nachgesehen. `apply_environment()` wirft nicht, ein Fehlschlag steht in
-    `ok` und in `notes`.
+    The first access sets the environment; after that it is only looked up.
+    `apply_environment()` does not raise; a failure is recorded in `ok` and in
+    `notes`.
 
-    Vor dem Anwenden wird die Prozessumgebung abgelichtet. Die Diagnose löst
-    später gegen dieses Abbild auf und nicht gegen die veränderte Umgebung,
-    sonst läse sie ihre eigene Tat und meldete jeden Wert aus der
-    Konfigurationsdatei als «aus der Umgebung».
+    Before applying, the process environment is photographed. The diagnosis
+    later resolves against that snapshot and not against the changed
+    environment; otherwise it would read its own writes and report every value
+    from the config file as coming "from the environment".
     """
-    global _UMGEBUNG, _SCHNAPPSCHUSS, _KONFIG_STAND
-    with _UMGEBUNG_SCHLOSS:
-        if _UMGEBUNG is None:
-            _SCHNAPPSCHUSS = dict(os.environ)
-            _KONFIG_STAND = _konfig_stand()
-            _UMGEBUNG = apply_environment()
-        return _UMGEBUNG
+    global _ENVIRONMENT, _SNAPSHOT, _CONFIG_STATE
+    with _ENVIRONMENT_LOCK:
+        if _ENVIRONMENT is None:
+            _SNAPSHOT = dict(os.environ)
+            _CONFIG_STATE = _config_state()
+            _ENVIRONMENT = apply_environment()
+        return _ENVIRONMENT
 
 
-NEUSTART_HINWEIS = (
-    "Die Konfigurationsdatei hat sich seit dem Start dieses Servers geändert. Es gilt weiterhin, "
-    "was beim Start galt: die Umgebung wird genau einmal gesetzt. Starte den Server neu, damit die "
-    "Änderung wirkt."
+RESTART_NOTE = (
+    "The config file has changed since this server started. What applied at startup still "
+    "applies, because the environment is set exactly once. Restart the server for the change to "
+    "take effect."
 )
 
 
-def _herkunft_hinweise(umgebung: EnvironmentApplication) -> list[str]:
-    """Was zur Herkunft der Schlüssel in jede Diagnose gehört.
+def _provenance_notes(application: EnvironmentApplication) -> list[str]:
+    """What every diagnosis needs to say about where the keys came from.
 
-    Die Diagnose löst gegen den Schnappschuss von vor dem Start auf. Dass sie
-    nicht ihre eigene Tat liest, gehört trotzdem dazu gesagt, denn in der
-    laufenden Prozessumgebung stehen die Werte jetzt sehr wohl.
+    The diagnosis resolves against the snapshot taken before startup. That it
+    does not read its own writes still needs saying, because the running
+    process environment does now contain those values.
     """
-    hinweise: list[str] = []
-    if umgebung.applied:
-        namen = ", ".join(umgebung.applied)
-        hinweise.append(
-            f"Diese Variablen hat dieser Server beim Start selbst gesetzt: {namen}. Die Herkunft "
-            "unten ist deshalb gegen die Umgebung von vor dem Start aufgelöst, nicht gegen die "
-            "jetzige Prozessumgebung."
+    notes: list[str] = []
+    if application.applied:
+        names = ", ".join(application.applied)
+        notes.append(
+            f"This server set these variables itself at startup: {names}. The sources below are "
+            "therefore resolved against the environment from before startup, not against the "
+            "current process environment."
         )
-    if _KONFIG_STAND is not None and _konfig_stand() != _KONFIG_STAND:
-        hinweise.append(NEUSTART_HINWEIS)
-    return hinweise
+    if _CONFIG_STATE is not None and _config_state() != _CONFIG_STATE:
+        notes.append(RESTART_NOTE)
+    return notes
 
 
 # ---------------------------------------------------------------------------
-# Eingaben sind fremde Daten
+# Inputs are foreign data
 # ---------------------------------------------------------------------------
 
 
-def _adresse(wert: object) -> str:
-    """Prüft die Startadresse eines Werkzeugaufrufs."""
-    text = wert.strip() if isinstance(wert, str) else ""
+def _url(value: object) -> str:
+    """Checks the start URL of a tool call."""
+    text = value.strip() if isinstance(value, str) else ""
     if not text:
         raise ToolError(
-            "Es wurde keine Adresse angegeben. Nenne die Seite, auf der begonnen werden soll, zum "
-            "Beispiel https://example.com/kontakt."
+            "No URL was given. Name the page the run should start on, for example "
+            "https://example.com/contact."
         )
-    if len(text) > MAX_URL_LAENGE:
+    if len(text) > MAX_URL_LENGTH:
         raise ToolError(
-            f"Die Adresse ist mit {len(text)} Zeichen länger als die erlaubten {MAX_URL_LAENGE} Zeichen."
+            f"The URL is {len(text)} characters long, more than the allowed {MAX_URL_LENGTH} characters."
         )
-    schema = text.split(":", 1)[0].lower() if ":" in text else ""
-    if schema not in {"http", "https"}:
+    scheme = text.split(":", 1)[0].lower() if ":" in text else ""
+    if scheme not in {"http", "https"}:
         raise ToolError(
-            "Die Adresse muss mit http:// oder https:// beginnen. Andere Schemata öffnet dieser Server nicht."
+            "The URL must start with http:// or https://. This server does not open any other scheme."
         )
     return text
 
 
-def _ziele(wert: object) -> tuple[list[str], list[str]]:
-    """Macht aus der Zielangabe eine Liste brauchbarer Sätze samt Hinweisen.
+def _goals(value: object) -> tuple[list[str], list[str]]:
+    """Turns the goals input into a list of usable sentences plus notes.
 
-    Ein leeres Ziel wird weiterhin verworfen, aber nicht mehr stillschweigend:
-    aus `["Suche die Seite", ""]` wurde ein Lauf mit einem Ziel, ohne dass das
-    irgendwo stand.
+    An empty goal is still dropped, but no longer silently: `["Find the page",
+    ""]` used to become a run with one goal without that being stated anywhere.
     """
-    if isinstance(wert, str):
-        roh: list[object] = [wert]
-    elif isinstance(wert, Sequence) and not isinstance(wert, bytes | bytearray):
-        roh = list(wert)
+    if isinstance(value, str):
+        raw: list[object] = [value]
+    elif isinstance(value, Sequence) and not isinstance(value, bytes | bytearray):
+        raw = list(value)
     else:
         raise ToolError(
-            "Die Ziele müssen ein Satz oder eine Liste von Sätzen sein, zum Beispiel "
-            '["Finde die Kontaktseite", "Lies die Telefonnummer vor"].'
+            "The goals must be a sentence or a list of sentences, for example "
+            '["Find the contact page", "Read out the phone number"].'
         )
-    if any(not isinstance(eintrag, str) for eintrag in roh):
-        raise ToolError("Jedes Ziel muss ein Satz in Worten sein, keine Zahl und kein Objekt.")
-    ziele = [str(eintrag).strip() for eintrag in roh if str(eintrag).strip()]
-    if not ziele:
+    if any(not isinstance(entry, str) for entry in raw):
+        raise ToolError("Every goal must be a sentence in words, not a number and not an object.")
+    goals = [str(entry).strip() for entry in raw if str(entry).strip()]
+    if not goals:
         raise ToolError(
-            "Es wurde kein Ziel angegeben. Schreibe in Worten, was auf der Seite geschehen soll, "
-            'zum Beispiel "Finde die Kontaktseite und lies die Telefonnummer".'
+            "No goal was given. Write in words what should happen on the page, "
+            'for example "Find the contact page and read the phone number".'
         )
-    if len(ziele) > MAX_ZIELE:
+    if len(goals) > MAX_GOALS:
         raise ToolError(
-            f"Es wurden {len(ziele)} Ziele angegeben, erlaubt sind höchstens {MAX_ZIELE}. Teile den "
-            "Auftrag in mehrere Läufe."
+            f"Too many goals were given: {len(goals)}. At most {MAX_GOALS} are allowed. Split the "
+            "task into several runs."
         )
-    zu_lang = next((ziel for ziel in ziele if len(ziel) > MAX_ZIEL_LAENGE), None)
-    if zu_lang is not None:
+    too_long = next((goal for goal in goals if len(goal) > MAX_GOAL_LENGTH), None)
+    if too_long is not None:
         raise ToolError(
-            f"Ein Ziel ist mit {len(zu_lang)} Zeichen länger als die erlaubten {MAX_ZIEL_LAENGE} "
-            "Zeichen. Fasse es kürzer."
+            f"A goal is {len(too_long)} characters long, more than the allowed {MAX_GOAL_LENGTH} "
+            "characters. Make it shorter."
         )
-    verworfen = len(roh) - len(ziele)
-    hinweise = (
+    dropped = len(raw) - len(goals)
+    notes = (
         [
-            f"Von den angegebenen Zielen waren {verworfen} leer. Sie wurden verworfen, gelaufen "
-            f"wird mit den übrigen {len(ziele)}."
+            f"Of the given goals, {dropped} were empty. They were dropped, and the run uses "
+            f"the remaining {len(goals)}."
         ]
-        if verworfen
+        if dropped
         else []
     )
-    return ziele, hinweise
+    return goals, notes
 
 
-def _domains(wert: object) -> tuple[list[str] | None, list[str]]:
-    """Prüft `allow_domains`. Eine einzelne Zeichenkette gilt als ein Eintrag.
+def _domains(value: object) -> tuple[list[str] | None, list[str]]:
+    """Checks `allow_domains`. A single string counts as one entry.
 
-    Leere Einträge werden verworfen, und auch das wird gesagt, statt dass die
-    Liste stillschweigend kürzer wird.
+    Empty entries are dropped, and that is stated too, instead of the list
+    silently getting shorter.
     """
-    if wert is None:
+    if value is None:
         return None, []
-    if isinstance(wert, str):
-        roh: list[object] = [wert]
-    elif isinstance(wert, Sequence) and not isinstance(wert, bytes | bytearray):
-        roh = list(wert)
+    if isinstance(value, str):
+        raw: list[object] = [value]
+    elif isinstance(value, Sequence) and not isinstance(value, bytes | bytearray):
+        raw = list(value)
     else:
         raise ToolError(
-            "allow_domains muss eine Domain oder eine Liste von Domains sein, zum Beispiel "
+            "allow_domains must be a domain or a list of domains, for example "
             '["example.com", "*.example.net"].'
         )
-    if any(not isinstance(eintrag, str) for eintrag in roh):
-        raise ToolError("Jede Domain in allow_domains muss eine Zeichenkette sein.")
-    domains = [str(eintrag).strip() for eintrag in roh if str(eintrag).strip()]
+    if any(not isinstance(entry, str) for entry in raw):
+        raise ToolError("Every domain in allow_domains must be a string.")
+    domains = [str(entry).strip() for entry in raw if str(entry).strip()]
     if len(domains) > MAX_ALLOW_DOMAINS:
         raise ToolError(
-            f"Es wurden {len(domains)} Domains angegeben, erlaubt sind höchstens {MAX_ALLOW_DOMAINS}."
+            f"Too many domains were given: {len(domains)}. At most {MAX_ALLOW_DOMAINS} are allowed."
         )
-    zu_lang = next((domain for domain in domains if len(domain) > MAX_DOMAIN_LAENGE), None)
-    if zu_lang is not None:
-        raise ToolError(f"Ein Eintrag in allow_domains ist mit {len(zu_lang)} Zeichen keine Domain.")
-    verworfen = len(roh) - len(domains)
-    hinweise = (
-        [f"Von den Einträgen in allow_domains waren {verworfen} leer und wurden verworfen."]
-        if verworfen
-        else []
-    )
-    return domains or None, hinweise
-
-
-def _zahl(name: str, wert: object, *, minimum: float, maximum: float) -> float:
-    """Prüft eine Zahl auf endlich und im erlaubten Bereich.
-
-    `True` und `False` sind in Python Zahlen, und `float(True)` ist eine glatte
-    Eins. `max_actions: true` ergab dadurch kommentarlos einen Lauf mit einer
-    einzigen Aktion, `time_budget_s: true` ein Budget von einer Sekunde. Beides
-    liegt im erlaubten Bereich und fiel deshalb nirgends auf.
-    """
-    if isinstance(wert, bool):
+    too_long = next((domain for domain in domains if len(domain) > MAX_DOMAIN_LENGTH), None)
+    if too_long is not None:
         raise ToolError(
-            f"{name} muss eine Zahl zwischen {minimum:g} und {maximum:g} sein, kein Wahrheitswert."
+            f"An entry in allow_domains is {len(too_long)} characters long, so it is not a domain."
         )
+    dropped = len(raw) - len(domains)
+    notes = [f"Of the entries in allow_domains, {dropped} were empty and were dropped."] if dropped else []
+    return domains or None, notes
+
+
+def _number(name: str, value: object, *, minimum: float, maximum: float) -> float:
+    """Checks that a number is finite and within the allowed range.
+
+    `True` and `False` are numbers in Python, and `float(True)` is a plain
+    one. `max_actions: true` therefore silently produced a run with a single
+    action, and `time_budget_s: true` a budget of one second. Both lie within
+    the allowed range, so neither stood out anywhere.
+    """
+    if isinstance(value, bool):
+        raise ToolError(f"{name} must be a number between {minimum:g} and {maximum:g}, not a boolean.")
     try:
-        zahl = float(wert)  # type: ignore[arg-type]
+        number = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError, OverflowError):
-        raise ToolError(f"{name} muss eine Zahl zwischen {minimum:g} und {maximum:g} sein.") from None
-    if not math.isfinite(zahl):
-        raise ToolError(f"{name} muss eine endliche Zahl zwischen {minimum:g} und {maximum:g} sein.")
-    if zahl < minimum or zahl > maximum:
+        raise ToolError(f"{name} must be a number between {minimum:g} and {maximum:g}.") from None
+    if not math.isfinite(number):
+        raise ToolError(f"{name} must be a finite number between {minimum:g} and {maximum:g}.")
+    if number < minimum or number > maximum:
         raise ToolError(
-            f"{name} liegt mit {zahl:g} ausserhalb des erlaubten Bereichs von {minimum:g} bis {maximum:g}."
+            f"{name} is {number:g}, which is outside the allowed range of {minimum:g} to {maximum:g}."
         )
-    return zahl
+    return number
 
 
-def _ganze_zahl(name: str, wert: object, *, minimum: int, maximum: int) -> int:
-    """Wie `_zahl`, gibt aber eine ganze Zahl zurück."""
-    return int(_zahl(name, wert, minimum=minimum, maximum=maximum))
+def _integer(name: str, value: object, *, minimum: int, maximum: int) -> int:
+    """Like `_number`, but returns an integer."""
+    return int(_number(name, value, minimum=minimum, maximum=maximum))
 
 
 # ---------------------------------------------------------------------------
-# Antworten
+# Responses
 # ---------------------------------------------------------------------------
 
 
-def _sendbar(wert: object) -> str:
-    """Macht aus einem Text einen, der sich als UTF-8 senden lässt.
+def _sendable(value: object) -> str:
+    """Turns a text into one that can be sent as UTF-8.
 
-    Das SDK serialisiert mit pydantic, und pydantic schreibt unmittelbar UTF-8.
-    Ein einsames Surrogat darin wirft, und zwar erst **nach** der Rückgabe des
-    Werkzeugs: der Client sah dann nur «Error executing tool browser_status»
-    ohne Begründung, ausgerechnet bei dem Werkzeug, das Fehler erklären soll.
-    Auf POSIX liefert `os.environ` genau solche Zeichen für ein ungültiges Byte
-    in einer Variablen, das ist also kein theoretischer Fall.
+    The SDK serializes with pydantic, and pydantic writes UTF-8 directly. A
+    lone surrogate in the text makes it raise, and only **after** the tool has
+    returned: the client then saw nothing but "Error executing tool
+    browser_status" without a reason, of all things for the tool that is meant
+    to explain errors. On POSIX, `os.environ` yields exactly such characters
+    for an invalid byte in a variable, so this is not a theoretical case.
     """
-    return str(wert).encode("utf-8", "replace").decode("utf-8")
+    return str(value).encode("utf-8", "replace").decode("utf-8")
 
 
-def _json_tauglich(wert: object) -> Any:
-    """Macht aus einem Ergebnis etwas, das `json.dumps(allow_nan=False)` übersteht.
+def _json_safe(value: object) -> Any:
+    """Turns a result into something that survives `json.dumps(allow_nan=False)`.
 
-    Tupel werden Listen, Aufzählungen werden ihr Text, `NaN` und die
-    Unendlichkeiten werden `None`, und alles Unbekannte wird sein `str()`. Die
-    Schritte eines Laufs kommen aus der Bibliothek, dort kann auch etwas stehen,
-    das der JSON-Kodierer nicht kennt.
+    Tuples become lists, enums become their text, `NaN` and the infinities
+    become `None`, and anything unknown becomes its `str()`. The steps of a run
+    come from the library, so something the JSON encoder does not know can
+    show up there too.
     """
-    if wert is None or isinstance(wert, bool):
-        return wert
-    if isinstance(wert, str):
-        return _sendbar(wert)
-    if isinstance(wert, int):
-        return int(wert)
-    if isinstance(wert, float):
-        return float(wert) if math.isfinite(wert) else None
-    if isinstance(wert, Mapping):
-        return {_sendbar(str(schluessel)): _json_tauglich(inhalt) for schluessel, inhalt in wert.items()}
-    if isinstance(wert, list | tuple | set | frozenset):
-        return [_json_tauglich(inhalt) for inhalt in wert]
-    return _sendbar(runner.sicherer_text(wert))
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return _sendable(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value) if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {_sendable(str(key)): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list | tuple | set | frozenset):
+        return [_json_safe(item) for item in value]
+    return _sendable(runner.safe_text(value))
 
 
-def _antwort(ergebnis: object) -> dict[str, Any]:
-    """Macht aus einem Ergebnis die Antwort des Werkzeugs, samt Umgebungszustand.
+def _response(result: object) -> dict[str, Any]:
+    """Turns a result into the tool's response, including the environment state.
 
-    Der Zustand der Umgebung steht in jeder Antwort, nicht nur in der ersten.
-    Ist er nicht in Ordnung, kippt ausserdem `ok` beziehungsweise `ready`, denn
-    dann läuft nichts, egal was sonst in der Antwort steht.
+    The state of the environment is in every response, not only in the first.
+    If it is not in order, `ok` or `ready` is also flipped, because then
+    nothing runs, whatever else the response says.
     """
-    daten = _json_tauglich(dataclasses.asdict(ergebnis))  # type: ignore[call-overload]
-    umgebung = environment()
-    daten["environment"] = _json_tauglich(dataclasses.asdict(umgebung))
-    if not umgebung.ok:
-        hinweise = list(daten.get("notes") or [])
-        if UMGEBUNG_WARNUNG not in hinweise:
-            hinweise.insert(0, UMGEBUNG_WARNUNG)
-        daten["notes"] = hinweise
-        if "ok" in daten:
-            daten["ok"] = False
-        if "ready" in daten:
-            daten["ready"] = False
-    return daten
+    data = _json_safe(dataclasses.asdict(result))  # type: ignore[call-overload]
+    applied = environment()
+    data["environment"] = _json_safe(dataclasses.asdict(applied))
+    if not applied.ok:
+        notes = list(data.get("notes") or [])
+        if ENVIRONMENT_WARNING not in notes:
+            notes.insert(0, ENVIRONMENT_WARNING)
+        data["notes"] = notes
+        if "ok" in data:
+            data["ok"] = False
+        if "ready" in data:
+            data["ready"] = False
+    return data
 
 
-def _ohne_stdout() -> Iterator[None]:
-    """Der Riegel für die Standardausgabe, für die Dauer eines Werkzeugaufrufs.
+def _stdout_guard() -> Iterator[None]:
+    """The standard output barrier, for the duration of a tool call.
 
-    Der Riegel selbst steht in `runner.ohne_stdout()`, denn der Arbeitsfaden
-    eines Laufs braucht ihn ebenfalls und überlebt den Aufruf. Beide Halter
-    zählen mit, damit die Ausgabe erst zurückgelegt wird, wenn der letzte
-    loslässt.
+    The barrier itself lives in `runner.stdout_to_stderr()`, because the worker
+    thread of a run needs it as well and outlives the call. Both holders are
+    counted, so the output is only restored once the last one lets go.
     """
-    return runner.ohne_stdout()
+    return runner.stdout_to_stderr()
 
 
-def _mit_umgebungswarnung(fehler: ToolError) -> ToolError:
-    """Hängt an einen Werkzeugfehler den Zustand der Umgebung, wenn er nicht stimmt.
+def _with_environment_warning(error: ToolError) -> ToolError:
+    """Appends the state of the environment to a tool error if it is not in order.
 
-    Der Modul-Docstring sagt zu, dass eine kaputte Umgebung in **jeder** Antwort
-    steht. Eine geworfene `ToolError` ist auch eine Antwort, und dort fehlte der
-    Satz bisher.
+    The module docstring promises that a broken environment is stated in
+    **every** response. A raised `ToolError` is a response too, and that
+    sentence used to be missing there.
     """
-    text = str(fehler)
-    if environment().ok or UMGEBUNG_WARNUNG in text:
-        return fehler
-    return ToolError(f"{text} {UMGEBUNG_WARNUNG}")
+    text = str(error)
+    if environment().ok or ENVIRONMENT_WARNING in text:
+        return error
+    return ToolError(f"{text} {ENVIRONMENT_WARNING}")
 
 
-def _mit_hinweisen(daten: dict[str, Any], hinweise: Sequence[str]) -> dict[str, Any]:
-    """Hängt Hinweise der Werkzeugschicht an die Antwort, jeden Wortlaut nur einmal."""
-    if not hinweise:
-        return daten
-    vorhanden = list(daten.get("notes") or [])
-    for hinweis in hinweise:
-        if hinweis not in vorhanden:
-            vorhanden.append(hinweis)
-    daten["notes"] = vorhanden
-    return daten
+def _with_notes(data: dict[str, Any], notes: Sequence[str]) -> dict[str, Any]:
+    """Appends notes from the tool layer to the response, each wording only once."""
+    if not notes:
+        return data
+    merged = list(data.get("notes") or [])
+    for note in notes:
+        if note not in merged:
+            merged.append(note)
+    data["notes"] = merged
+    return data
 
 
-def _unerwartet(name: str, fehler: BaseException) -> ToolError:
-    """Macht aus einem unerwarteten Fehler einen lesbaren Werkzeugfehler."""
-    text = runner.kurzfassung(runner.sicherer_text(fehler) or "ohne Text")
+def _unexpected(name: str, error: BaseException) -> ToolError:
+    """Turns an unexpected error into a readable tool error."""
+    text = runner.condense(runner.safe_text(error) or "no message")
     return ToolError(
-        f"Das Werkzeug {name} ist unerwartet gescheitert ({type(fehler).__name__}: {text}). Der "
-        "Server läuft weiter, versuche es erneut oder frage zuerst browser_status."
+        f"The tool {name} failed unexpectedly ({type(error).__name__}: {text}). The "
+        "server is still running; try again or ask browser_status first."
     )
 
 
 # ---------------------------------------------------------------------------
-# Die drei Werkzeuge
+# The three tools
 # ---------------------------------------------------------------------------
 
 
@@ -473,41 +466,41 @@ def browser_task(
     allow_domains: list[str] | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Der autonome Lauf. Siehe `BROWSER_TASK_DESCRIPTION` für den Text, den ein Modell liest."""
+    """The autonomous run. See `BROWSER_TASK_DESCRIPTION` for the text a model reads."""
     try:
-        adresse = _adresse(url)
-        saetze, ziel_hinweise = _ziele(goals)
-        aktionen = _ganze_zahl("max_actions", max_actions, minimum=1, maximum=runner.LIBRARY_MAX_ACTIONS)
-        zeit = _zahl("time_budget_s", time_budget_s, minimum=1.0, maximum=runner.MAX_TIME_BUDGET_S)
-        domains, domain_hinweise = _domains(allow_domains)
-        with _ohne_stdout():
-            ergebnis = runner.run_task(
-                adresse,
-                saetze,
-                max_actions=aktionen,
-                time_budget_s=zeit,
+        address = _url(url)
+        sentences, goal_notes = _goals(goals)
+        actions = _integer("max_actions", max_actions, minimum=1, maximum=runner.LIBRARY_MAX_ACTIONS)
+        budget = _number("time_budget_s", time_budget_s, minimum=1.0, maximum=runner.MAX_TIME_BUDGET_S)
+        domains, domain_notes = _domains(allow_domains)
+        with _stdout_guard():
+            result = runner.run_task(
+                address,
+                sentences,
+                max_actions=actions,
+                time_budget_s=budget,
                 allow_domains=domains,
                 dry_run=bool(dry_run),
                 environment=environment(),
             )
-        return _mit_hinweisen(_antwort(ergebnis), [*ziel_hinweise, *domain_hinweise])
-    except ToolError as fehler:
-        raise _mit_umgebungswarnung(fehler) from None
-    except Exception as fehler:  # noqa: BLE001
-        raise _mit_umgebungswarnung(_unerwartet("browser_task", fehler)) from fehler
+        return _with_notes(_response(result), [*goal_notes, *domain_notes])
+    except ToolError as error:
+        raise _with_environment_warning(error) from None
+    except Exception as error:  # noqa: BLE001
+        raise _with_environment_warning(_unexpected("browser_task", error)) from error
 
 
 def browser_status() -> dict[str, Any]:
-    """Die Diagnose ohne Nebenwirkung. Siehe `BROWSER_STATUS_DESCRIPTION`."""
+    """The diagnosis without side effects. See `BROWSER_STATUS_DESCRIPTION`."""
     try:
-        umgebung = environment()
-        with _ohne_stdout():
-            befund = diagnose(env=_SCHNAPPSCHUSS)
-        return _mit_hinweisen(_antwort(befund), _herkunft_hinweise(umgebung))
-    except ToolError as fehler:
-        raise _mit_umgebungswarnung(fehler) from None
-    except Exception as fehler:  # noqa: BLE001
-        raise _mit_umgebungswarnung(_unerwartet("browser_status", fehler)) from fehler
+        application = environment()
+        with _stdout_guard():
+            diagnosis = diagnose(env=_SNAPSHOT)
+        return _with_notes(_response(diagnosis), _provenance_notes(application))
+    except ToolError as error:
+        raise _with_environment_warning(error) from None
+    except Exception as error:  # noqa: BLE001
+        raise _with_environment_warning(_unexpected("browser_status", error)) from error
 
 
 def browser_read(
@@ -516,49 +509,49 @@ def browser_read(
     allow_domains: list[str] | None = None,
     text_limit: int = runner.DEFAULT_TEXT_LIMIT,
 ) -> dict[str, Any]:
-    """Eine Seite lesen, ohne zu handeln. Siehe `BROWSER_READ_DESCRIPTION`."""
+    """Read one page without acting. See `BROWSER_READ_DESCRIPTION`."""
     try:
-        adresse = _adresse(url)
-        zeit = _zahl("time_budget_s", time_budget_s, minimum=1.0, maximum=runner.MAX_TIME_BUDGET_S)
-        grenze = _ganze_zahl(
+        address = _url(url)
+        budget = _number("time_budget_s", time_budget_s, minimum=1.0, maximum=runner.MAX_TIME_BUDGET_S)
+        limit = _integer(
             "text_limit",
             text_limit,
             minimum=runner.MIN_TEXT_LIMIT,
             maximum=runner.MAX_TEXT_LIMIT,
         )
-        domains, domain_hinweise = _domains(allow_domains)
-        with _ohne_stdout():
-            ergebnis = runner.read_page(
-                adresse,
-                time_budget_s=zeit,
+        domains, domain_notes = _domains(allow_domains)
+        with _stdout_guard():
+            result = runner.read_page(
+                address,
+                time_budget_s=budget,
                 allow_domains=domains,
-                text_limit=grenze,
+                text_limit=limit,
                 environment=environment(),
             )
-        return _mit_hinweisen(_antwort(ergebnis), domain_hinweise)
-    except ToolError as fehler:
-        raise _mit_umgebungswarnung(fehler) from None
-    except Exception as fehler:  # noqa: BLE001
-        raise _mit_umgebungswarnung(_unerwartet("browser_read", fehler)) from fehler
+        return _with_notes(_response(result), domain_notes)
+    except ToolError as error:
+        raise _with_environment_warning(error) from None
+    except Exception as error:  # noqa: BLE001
+        raise _with_environment_warning(_unexpected("browser_read", error)) from error
 
 
 # ---------------------------------------------------------------------------
-# Der Server
+# The server
 # ---------------------------------------------------------------------------
 
 
 def _version() -> str:
     try:
         return version("jev-mcp")
-    except PackageNotFoundError:  # Nur ohne installiertes Paket.
+    except PackageNotFoundError:  # Only without an installed package.
         return "0.0.0"
 
 
 def create_server() -> MCPServer:
-    """Baut den Server und meldet die drei Werkzeuge an.
+    """Builds the server and registers the three tools.
 
-    Die Umgebung wird hier angewandt, also einmal beim Start und nicht bei jedem
-    Aufruf.
+    The environment is applied here, so once at startup and not on every
+    call.
     """
     environment()
     server = MCPServer(name=SERVER_NAME, version=_version(), instructions=INSTRUCTIONS)
@@ -568,15 +561,15 @@ def create_server() -> MCPServer:
     return server
 
 
-_protokoll = logging.getLogger(SERVER_NAME)
+_log = logging.getLogger(SERVER_NAME)
 
 
-def _protokoll_auf_stderr(level: int = logging.INFO) -> None:
-    """Legt alle Protokollausgaben auf stderr.
+def _log_to_stderr(level: int = logging.INFO) -> None:
+    """Sends all log output to stderr.
 
-    Bei stdio ist die Standardausgabe der Protokollkanal. Eine Bibliothek, die
-    dorthin protokolliert, zerstört die Verbindung, und der Client sieht nur,
-    dass nichts mehr geht.
+    With stdio, standard output is the protocol channel. A library that logs
+    there breaks the connection, and the client only sees that nothing works
+    any more.
     """
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
@@ -584,24 +577,24 @@ def _protokoll_auf_stderr(level: int = logging.INFO) -> None:
 
 
 def main() -> None:
-    """Der Konsolenbefehl `jev-mcp`: startet den Server über stdio.
+    """The console command `jev-mcp`: starts the server over stdio.
 
-    Geht der Client weg, ist das kein Fehler, sondern das Ende. Ohne diese
-    Behandlung endete der Server mit einem Traceback und Exitcode 1, und in
-    Claude Desktop sah das aus wie ein Absturz. Das SDK bündelt Ausnahmen aus
-    seinen Aufgabengruppen, deshalb wird auch die Gruppe aufgetrennt.
+    When the client goes away, that is not an error but the end. Without this
+    handling the server ended with a traceback and exit code 1, and in Claude
+    Desktop that looked like a crash. The SDK bundles exceptions from its task
+    groups, so the group is split apart as well.
     """
-    _protokoll_auf_stderr()
+    _log_to_stderr()
     try:
         create_server().run("stdio")
     except (BrokenPipeError, KeyboardInterrupt):
-        _protokoll.info("Der Client hat die Leitung geschlossen, der Server endet.")
-    except BaseExceptionGroup as gruppe:
-        _, rest = gruppe.split((BrokenPipeError, KeyboardInterrupt))
+        _log.info("The client closed the connection, the server is shutting down.")
+    except BaseExceptionGroup as group:
+        _, rest = group.split((BrokenPipeError, KeyboardInterrupt))
         if rest is not None:
             raise rest from None
-        _protokoll.info("Der Client hat die Leitung geschlossen, der Server endet.")
+        _log.info("The client closed the connection, the server is shutting down.")
 
 
-if __name__ == "__main__":  # Der Einstieg als Modul.
+if __name__ == "__main__":  # The entry point as a module.
     main()

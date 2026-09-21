@@ -130,7 +130,6 @@ The agent underneath is an MVP, and these gaps are real:
   sessions, for real. Each run opens its own background window and closes it afterwards. It does
   not use a background tab, because Chrome 153 answers no command sent to a background tab created
   over the DevTools protocol, while a background window works and leaves your own window alone.
-* Result messages are in German. The tool descriptions, which the model reads, are in English.
 * Do not put credentials into `goals`. The goal text comes back verbatim in the result, and so does
   every value the agent typed into a field. Nothing of that is masked, on purpose: the typed text is
   the most important record of what the agent actually did. Password, file and hidden fields are
@@ -139,7 +138,7 @@ The agent underneath is an MVP, and these gaps are real:
 * Logging in, paying, ordering and submitting forms on banking or payment sites are out of scope for
   this project.
 
-## The safeguard: domain fidelity instead of a blocklist
+## The safeguard: a domain lock instead of a blocklist
 
 There is no blocklist. That was a deliberate decision: the agent only ever runs on request, so there
 are no forbidden domains. Instead a run remembers the registrable domain of its start URL. If a

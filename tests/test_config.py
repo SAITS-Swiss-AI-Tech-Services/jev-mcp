@@ -1,13 +1,13 @@
-"""Tests für jev_mcp.config.
+"""Tests for jev_mcp.config.
 
-Keine echten Schlüssel, keine Netzaufrufe. Umgebungsvariablen werden
-ausschliesslich über monkeypatch gesetzt, der Browser-Test über eine
-eingespeiste Prüffunktion.
+No real keys, no network calls. Environment variables are set exclusively
+via monkeypatch, and the browser test uses an injected probe function.
 """
 
 import dataclasses
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -16,7 +16,7 @@ import pytest
 
 from jev_mcp import config
 
-# Erfundene Platzhalter. Sehen wie Schlüssel aus, sind aber keine.
+# Made-up placeholders. They look like keys, but they are not.
 FAKE_TYPESAFE = "ts-fake-0000-typesafe-placeholder"
 FAKE_TEXT = "tm-fake-0000-textmodel-placeholder"
 FAKE_DEEPSEEK = "dsk-fake-0000-deepseek-placeholder"
@@ -24,12 +24,25 @@ FAKE_OPENROUTER = "orr-fake-0000-openrouter-placeholder"
 FAKE_MOONSHOT = "msk-fake-0000-moonshot-placeholder"
 FAKE_KIMI = "kmi-fake-0000-kimi-placeholder"
 
-# Erfundene Anmeldedaten für die Basis-URL. Lang genug, damit ein Teilstueck
-# im Abzug sicher auffallen wuerde.
-URL_USER = "urluser-fake-0000-benutzer"
-URL_PASSWORD = "urlpass-fake-0000-passwort"
-URL_QUERY_SECRET = "urlquery-fake-0000-abfrage"
-URL_FRAGMENT = "urlfragment-fake-0000-teil"
+# Made-up credentials for the base URL. Long enough that any piece of them
+# would certainly stand out in the dump.
+URL_USER = "urluser-fake-0000-username"
+URL_PASSWORD = "urlpass-fake-0000-password"
+URL_QUERY_SECRET = "urlquery-fake-0000-query"
+URL_FRAGMENT = "urlfragment-fake-0000-part"
+
+# German letters must not appear in a user-facing sentence.
+GERMAN_LETTERS = re.compile("[äöüÄÖÜß]")
+# German without umlauts: two different German function words in one sentence.
+# "die" is left out because it is also an English word, and a single hit is not
+# enough because a host name such as das.de or mit.edu may appear in a sentence.
+GERMAN_STOPWORDS = re.compile(r"\b(der|das|und|nicht|wurde|ist|ein|eine|mit|oder)\b", re.IGNORECASE)
+
+
+def looks_german(sentence: str) -> bool:
+    """True if the sentence contains two different German function words."""
+    return len({word.lower() for word in GERMAN_STOPWORDS.findall(sentence)}) >= 2
+
 
 ALL_KEY_VARS = (
     "TYPESAFE_API_KEY",
@@ -47,25 +60,25 @@ ALL_KEY_VARS = (
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
-    """Jeder Test startet ohne geerbte Schlüssel aus der echten Shell."""
+    """Every test starts without keys inherited from the real shell."""
     for name in ALL_KEY_VARS:
         monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture
 def missing_file(tmp_path):
-    """Ein Pfad, an dem sicher keine Konfigurationsdatei liegt."""
-    return tmp_path / "gibt-es-nicht" / "env"
+    """A path where there is certainly no configuration file."""
+    return tmp_path / "does-not-exist" / "env"
 
 
 def browser(daemon=True, chrome=True):
-    """Eine eingespeiste Browser-Prüfung ohne Netz und ohne Daemon."""
+    """An injected browser probe without network and without a daemon."""
 
     def probe():
         return config.BrowserStatus(
             daemon_running=daemon,
             browser_connected=chrome,
-            detail="Eingespeiste Prüfung für den Test.",
+            detail="Injected probe for the test.",
         )
 
     return probe
@@ -75,7 +88,7 @@ def run(config_path, probe=None):
     return config.diagnose(config_path=config_path, probe_browser=probe or browser())
 
 
-# --- Auflösung der Schlüssel ------------------------------------------------
+# --- Resolving the keys -----------------------------------------------------
 
 
 def test_no_keys_at_all(missing_file):
@@ -96,7 +109,7 @@ def test_only_typesafe(monkeypatch, missing_file):
     assert result.text_model.present is False
     assert result.ready is True
     assert len(result.blocked_operations) == 1
-    assert "Tippen" in result.blocked_operations[0]
+    assert "Typing" in result.blocked_operations[0]
 
 
 def test_typesafe_plus_deepseek(monkeypatch, missing_file):
@@ -214,10 +227,10 @@ def test_kimi_from_the_file_beats_deepseek_from_the_file(tmp_path):
 
 
 def test_file_kimi_beats_environment_deepseek(monkeypatch, tmp_path):
-    """Befund 4: der Anbieter geht vor der Quelle.
+    """Finding 4: the provider comes before the source.
 
-    Wer den Kimi-Schlüssel eigens für dieses Projekt in die Datei legt, will
-    Kimi, auch wenn in der Shell noch ein alter DeepSeek-Schlüssel steht.
+    Whoever puts the Kimi key into the file specifically for this project wants
+    Kimi, even if an old DeepSeek key is still set in the shell.
     """
     path = tmp_path / "env"
     path.write_text(f"MOONSHOT_API_KEY={FAKE_MOONSHOT}\n", encoding="utf-8")
@@ -229,9 +242,9 @@ def test_file_kimi_beats_environment_deepseek(monkeypatch, tmp_path):
 
 
 def test_environment_deepseek_beats_file_deepseek(monkeypatch, tmp_path):
-    """Innerhalb einer Anbieterstufe bleibt die Umgebung vor der Datei."""
+    """Within a provider tier, the environment stays ahead of the file."""
     path = tmp_path / "env"
-    path.write_text("DEEPSEEK_API_KEY=dsk-fake-aus-der-datei\n", encoding="utf-8")
+    path.write_text("DEEPSEEK_API_KEY=dsk-fake-from-the-file\n", encoding="utf-8")
     monkeypatch.setenv("DEEPSEEK_API_KEY", FAKE_DEEPSEEK)
     result = run(path)
     assert result.text_model.variable == "DEEPSEEK_API_KEY"
@@ -239,7 +252,7 @@ def test_environment_deepseek_beats_file_deepseek(monkeypatch, tmp_path):
 
 
 def test_file_text_model_key_beats_environment_moonshot(monkeypatch, tmp_path):
-    """TEXT_MODEL_API_KEY ist die erste Stufe, auch aus der Datei."""
+    """TEXT_MODEL_API_KEY is the first tier, also when it comes from the file."""
     path = tmp_path / "env"
     path.write_text(f"TEXT_MODEL_API_KEY={FAKE_TEXT}\n", encoding="utf-8")
     monkeypatch.setenv("MOONSHOT_API_KEY", FAKE_MOONSHOT)
@@ -249,7 +262,7 @@ def test_file_text_model_key_beats_environment_moonshot(monkeypatch, tmp_path):
 
 
 def test_file_openrouter_loses_against_environment_deepseek(monkeypatch, tmp_path):
-    """DeepSeek steht in der Rangfolge über OpenRouter, egal aus welcher Quelle."""
+    """DeepSeek ranks above OpenRouter, regardless of the source."""
     path = tmp_path / "env"
     path.write_text(f"OPENROUTER_API_KEY={FAKE_OPENROUTER}\n", encoding="utf-8")
     monkeypatch.setenv("DEEPSEEK_API_KEY", FAKE_DEEPSEEK)
@@ -267,13 +280,13 @@ def test_provider_and_model_appear_in_the_human_readable_output(monkeypatch, mis
     assert "kimi" in result.summary and "kimi-k3" in result.summary
 
 
-# --- Datei als Quelle -------------------------------------------------------
+# --- File as a source -------------------------------------------------------
 
 
 def test_file_is_used_when_environment_is_empty(tmp_path):
     path = tmp_path / "env"
     path.write_text(
-        f"# Kommentar\n\nTYPESAFE_API_KEY=\"{FAKE_TYPESAFE}\"\nDEEPSEEK_API_KEY='{FAKE_DEEPSEEK}'\n",
+        f"# comment\n\nTYPESAFE_API_KEY=\"{FAKE_TYPESAFE}\"\nDEEPSEEK_API_KEY='{FAKE_DEEPSEEK}'\n",
         encoding="utf-8",
     )
     result = run(path)
@@ -287,7 +300,7 @@ def test_file_is_used_when_environment_is_empty(tmp_path):
 def test_environment_beats_file(monkeypatch, tmp_path):
     path = tmp_path / "env"
     path.write_text(f"TYPESAFE_API_KEY={FAKE_TYPESAFE}\n", encoding="utf-8")
-    monkeypatch.setenv("TYPESAFE_API_KEY", "ts-fake-aus-der-umgebung")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts-fake-from-the-environment")
     result = run(path)
     assert result.typesafe.source == config.SOURCE_ENVIRONMENT
 
@@ -312,11 +325,11 @@ def test_quotes_and_whitespace_are_stripped(tmp_path):
 def test_garbage_lines_do_not_crash(tmp_path):
     path = tmp_path / "env"
     path.write_text(
-        "das ist kein paar\n"
-        "\x00\xff binär müll\n"
-        "=ohne name\n"
+        "this is not a pair\n"
+        "\x00\xff binary junk\n"
+        "=without name\n"
         f"TYPESAFE_API_KEY={FAKE_TYPESAFE}\n"
-        "noch eine kaputte zeile\n",
+        "another broken line\n",
         encoding="utf-8",
     )
     values, notes = config.read_config_file(path)
@@ -330,7 +343,7 @@ def test_garbage_lines_do_not_crash(tmp_path):
 
 def test_unreadable_file_does_not_crash(tmp_path):
     path = tmp_path / "env"
-    path.mkdir()  # ein Verzeichnis statt einer Datei
+    path.mkdir()  # a directory instead of a file
     values, notes = config.read_config_file(path)
     assert values == {}
     assert len(notes) == 1
@@ -345,7 +358,7 @@ def test_missing_file_produces_no_note(missing_file):
     assert notes == ()
 
 
-# --- Keine Geheimnisse in der Ausgabe ---------------------------------------
+# --- No secrets in the output ----------------------------------------------
 
 
 def test_no_key_value_appears_in_the_diagnosis(monkeypatch, tmp_path):
@@ -359,21 +372,21 @@ def test_no_key_value_appears_in_the_diagnosis(monkeypatch, tmp_path):
     )
     for secret in (FAKE_TYPESAFE, FAKE_MOONSHOT, FAKE_OPENROUTER):
         assert secret not in haystack
-        # Auch kein Teilstück, das laenger als vier Zeichen ist.
+        # Not even a piece longer than four characters.
         assert secret[-8:] not in haystack
         assert secret[:8] not in haystack
 
 
 def dump(result):
-    """Alles, was ein MCP-Werkzeug oder ein Log von der Diagnose zu sehen bekommt."""
+    """Everything an MCP tool or a log gets to see of the diagnosis."""
     return "\n".join([repr(result), str(result), json.dumps(dataclasses.asdict(result), ensure_ascii=False)])
 
 
 def test_no_injected_secret_appears_anywhere_in_the_dump(monkeypatch, tmp_path):
-    """Befund 1: der ganze asdict-Abzug wird nach eingeschleusten Geheimnissen durchsucht.
+    """Finding 1: the whole asdict dump is searched for injected secrets.
 
-    Geprüft werden Schlüssel aus Umgebung und Datei, Anmeldedaten in der
-    Basis-URL und ein Schlüssel als Abfrageparameter.
+    Checked are keys from the environment and the file, credentials in the
+    base URL and a key as a query parameter.
     """
     path = tmp_path / "env"
     path.write_text(f"OPENROUTER_API_KEY={FAKE_OPENROUTER}\n", encoding="utf-8")
@@ -396,13 +409,13 @@ def test_no_injected_secret_appears_anywhere_in_the_dump(monkeypatch, tmp_path):
         URL_QUERY_SECRET,
         URL_FRAGMENT,
     ):
-        assert secret not in haystack, f"Geheimnis {secret[:3]}... steht im Abzug"
+        assert secret not in haystack, f"Secret {secret[:3]}... appears in the dump"
         assert secret[:8] not in haystack
         assert secret[-8:] not in haystack
 
 
 def test_credentials_in_the_base_url_are_stripped(monkeypatch, missing_file):
-    """Befund 1: nur Schema, Host, Port und Pfad bleiben stehen."""
+    """Finding 1: only scheme, host, port and path remain."""
     monkeypatch.setenv("TEXT_MODEL_API_KEY", FAKE_TEXT)
     monkeypatch.setenv(
         "TEXT_MODEL_BASE_URL",
@@ -413,17 +426,17 @@ def test_credentials_in_the_base_url_are_stripped(monkeypatch, missing_file):
 
 
 def test_an_unusable_base_url_falls_back_to_the_provider_default(monkeypatch, missing_file):
-    """Befund 1: was nicht sauber zerlegbar ist, wird gar nicht erst angezeigt."""
+    """Finding 1: what cannot be parsed cleanly is not shown at all."""
     monkeypatch.setenv("MOONSHOT_API_KEY", FAKE_MOONSHOT)
-    monkeypatch.setenv("TEXT_MODEL_BASE_URL", f"benutzer:{URL_PASSWORD}@example.com/v1")
+    monkeypatch.setenv("TEXT_MODEL_BASE_URL", f"user:{URL_PASSWORD}@example.com/v1")
     result = run(missing_file)
     assert result.text_model.base_url == "https://api.moonshot.ai/v1"
     assert URL_PASSWORD not in dump(result)
-    assert any("unbrauchbar" in note for note in result.notes)
+    assert any("unusable" in note for note in result.notes)
 
 
 def test_apply_environment_still_passes_the_raw_base_url_on(monkeypatch, missing_file):
-    """Der Rohwert darf nach os.environ, nur nicht in eine Rückgabe."""
+    """The raw value may go to os.environ, just not into a return value."""
     raw = f"https://{URL_USER}:{URL_PASSWORD}@proxy.example.com:8443/v1?api-key={URL_QUERY_SECRET}"
     environ = {}
     result = config.apply_environment(
@@ -437,27 +450,27 @@ def test_apply_environment_still_passes_the_raw_base_url_on(monkeypatch, missing
     assert URL_QUERY_SECRET not in repr(result)
 
 
-# --- diagnose() wirft nie ---------------------------------------------------
+# --- diagnose() never raises ------------------------------------------------
 
 
 class HostileMapping:
-    """Eine Umgebung, die bei jedem Zugriff kaputtgeht."""
+    """An environment that breaks on every access."""
 
     def get(self, *args, **kwargs):
-        raise RuntimeError("kaputte Umgebung")
+        raise RuntimeError("broken environment")
 
     def __getitem__(self, name):
-        raise RuntimeError("kaputte Umgebung")
+        raise RuntimeError("broken environment")
 
 
 class HostilePath:
-    """Ein Pfadobjekt, dessen __fspath__ selbst fliegt."""
+    """A path object whose own __fspath__ raises."""
 
     def __fspath__(self):
-        raise RuntimeError("kaputter Pfad")
+        raise RuntimeError("broken path")
 
     def __repr__(self):
-        return "<kaputter Pfad>"
+        return "<broken path>"
 
 
 def test_diagnose_survives_a_hostile_environment(missing_file):
@@ -471,7 +484,7 @@ def test_diagnose_survives_a_failing_browser_probe(monkeypatch, missing_file):
     monkeypatch.setenv("TYPESAFE_API_KEY", FAKE_TYPESAFE)
 
     def explode():
-        raise OSError("Daemon-Sockel kaputt")
+        raise OSError("daemon socket broken")
 
     result = config.diagnose(config_path=missing_file, probe_browser=explode)
     assert result.browser.daemon_running is False
@@ -487,11 +500,11 @@ def test_diagnose_survives_a_broken_config_path(monkeypatch):
 
 
 def test_diagnose_without_arguments_does_not_raise(monkeypatch, missing_file):
-    """Auch der Vorgabeweg mit der Vorgabedatei fliegt nicht.
+    """The default path with the default file does not raise either.
 
-    Die Browser-Prüfung wird eingespeist. Der echte Weg würde den Sockel des
-    Entwicklerrechners anfassen und die Antwort hinge davon ab, ob dort gerade
-    ein Daemon läuft.
+    The browser probe is injected. The real path would touch the socket on the
+    developer's machine, and the answer would depend on whether a daemon
+    happens to be running there.
     """
     monkeypatch.setattr(config, "DEFAULT_CONFIG_PATH", missing_file)
     result = config.diagnose(probe_browser=browser())
@@ -500,14 +513,14 @@ def test_diagnose_without_arguments_does_not_raise(monkeypatch, missing_file):
 
 
 def test_diagnose_survives_a_path_object_that_explodes(monkeypatch):
-    """Befund 11: auch display_path und die Existenzprüfung liegen im Schutz."""
+    """Finding 11: display_path and the existence check are covered by the guard too."""
     monkeypatch.setenv("TYPESAFE_API_KEY", FAKE_TYPESAFE)
     result = config.diagnose(config_path=HostilePath(), probe_browser=browser())
     assert isinstance(result, config.Diagnosis)
     assert result.config_file_present is False
 
 
-# --- Die Sätze --------------------------------------------------------------
+# --- The sentences ----------------------------------------------------------
 
 
 def all_sentences(result):
@@ -531,18 +544,19 @@ def all_sentences(result):
         (False, True, True, True),
     ],
 )
-def test_sentences_are_whole_german_sentences(monkeypatch, missing_file, typesafe, text, daemon, chrome):
+def test_sentences_are_whole_english_sentences(monkeypatch, missing_file, typesafe, text, daemon, chrome):
     if typesafe:
         monkeypatch.setenv("TYPESAFE_API_KEY", FAKE_TYPESAFE)
     if text:
         monkeypatch.setenv("DEEPSEEK_API_KEY", FAKE_DEEPSEEK)
     result = run(missing_file, probe=browser(daemon=daemon, chrome=chrome))
     for sentence in all_sentences(result):
-        assert sentence, "leerer Satz"
+        assert sentence, "empty sentence"
         assert sentence[0].isupper()
         assert sentence.rstrip().endswith(".")
         assert len(sentence.split()) >= 5
-        assert "ß" not in sentence
+        assert not GERMAN_LETTERS.search(sentence)
+        assert not looks_german(sentence)
         assert "–" not in sentence and "—" not in sentence
         assert " - " not in sentence
 
@@ -551,9 +565,9 @@ def test_missing_text_model_sentence_names_what_still_works(monkeypatch, missing
     monkeypatch.setenv("TYPESAFE_API_KEY", FAKE_TYPESAFE)
     result = run(missing_file)
     sentence = result.blocked_operations[0]
-    assert "Tippen" in sentence
-    assert "Textmodell" in sentence
-    assert "Klicken" in sentence and "Scrollen" in sentence
+    assert "Typing" in sentence
+    assert "text model" in sentence
+    assert "Clicking" in sentence and "scrolling" in sentence
 
 
 def test_missing_typesafe_blocks_everything(missing_file):
@@ -567,7 +581,7 @@ def test_daemon_down_blocks_the_run(monkeypatch, missing_file):
     monkeypatch.setenv("DEEPSEEK_API_KEY", FAKE_DEEPSEEK)
     result = run(missing_file, probe=browser(daemon=False, chrome=False))
     assert result.ready is False
-    assert any("Daemon" in s for s in result.blocked_operations)
+    assert any("daemon" in s for s in result.blocked_operations)
 
 
 def test_daemon_up_without_chrome_blocks_the_run(monkeypatch, missing_file):
@@ -578,7 +592,7 @@ def test_daemon_up_without_chrome_blocks_the_run(monkeypatch, missing_file):
     assert any("Chrome" in s for s in result.blocked_operations)
 
 
-# --- Anwenden auf os.environ ------------------------------------------------
+# --- Applying to os.environ -------------------------------------------------
 
 
 def test_apply_environment_sets_the_resolved_values(tmp_path):
@@ -643,14 +657,14 @@ def test_apply_environment_never_raises():
     assert environ == {}
 
 
-# --- Befund 2: ganz oder gar nicht ------------------------------------------
+# --- Finding 2: all or nothing ---------------------------------------------
 
 
 class PickyEnviron(dict):
-    """Eine Zielumgebung, die genau eine Variable nicht annimmt.
+    """A target environment that refuses exactly one variable.
 
-    Bildet den Fall nach, dass `os.environ.__setitem__` einen Wert ablehnt,
-    zum Beispiel wegen eines Nullbytes.
+    Reproduces the case where `os.environ.__setitem__` rejects a value, for
+    example because of a null byte.
     """
 
     def __init__(self, rejects, **start):
@@ -659,12 +673,12 @@ class PickyEnviron(dict):
 
     def __setitem__(self, name, value):
         if name == self.rejects:
-            raise ValueError("diese Variable nimmt die Umgebung nicht an")
+            raise ValueError("the environment does not accept this variable")
         super().__setitem__(name, value)
 
 
 def test_apply_environment_sets_everything_or_nothing(missing_file):
-    """Befund 2: kein halb gesetzter Zustand, kein stilles Verschlucken."""
+    """Finding 2: no half-set state, no silent swallowing."""
     environ = PickyEnviron("TEXT_MODEL_BASE_URL")
     result = config.apply_environment(
         env={"TYPESAFE_API_KEY": FAKE_TYPESAFE, "MOONSHOT_API_KEY": FAKE_MOONSHOT},
@@ -678,11 +692,11 @@ def test_apply_environment_sets_everything_or_nothing(missing_file):
 
 
 def test_apply_environment_restores_the_previous_values_on_failure(missing_file):
-    """Befund 2: ein Fehler mitten drin lässt nichts Fremdes zurück."""
+    """Finding 2: a failure halfway through leaves nothing foreign behind."""
     environ = PickyEnviron(
         "TEXT_MODEL_BASE_URL",
-        TEXT_MODEL_API_KEY="dsk-fake-vorher-vorhanden",
-        TYPESAFE_API_KEY="ts-fake-vorher-vorhanden",
+        TEXT_MODEL_API_KEY="dsk-fake-present-before",
+        TYPESAFE_API_KEY="ts-fake-present-before",
     )
     result = config.apply_environment(
         env={"TYPESAFE_API_KEY": FAKE_TYPESAFE, "MOONSHOT_API_KEY": FAKE_MOONSHOT},
@@ -690,12 +704,12 @@ def test_apply_environment_restores_the_previous_values_on_failure(missing_file)
         environ=environ,
     )
     assert result.ok is False
-    assert environ["TEXT_MODEL_API_KEY"] == "dsk-fake-vorher-vorhanden"
-    assert environ["TYPESAFE_API_KEY"] == "ts-fake-vorher-vorhanden"
+    assert environ["TEXT_MODEL_API_KEY"] == "dsk-fake-present-before"
+    assert environ["TYPESAFE_API_KEY"] == "ts-fake-present-before"
 
 
 def test_apply_environment_tells_nothing_to_do_apart_from_failure(missing_file):
-    """Befund 2: der Rückgabewert unterscheidet die beiden Fälle."""
+    """Finding 2: the return value tells the two cases apart."""
     nothing = config.apply_environment(env={}, config_path=missing_file, environ={})
     broken = config.apply_environment(
         env={"TYPESAFE_API_KEY": FAKE_TYPESAFE},
@@ -707,16 +721,16 @@ def test_apply_environment_tells_nothing_to_do_apart_from_failure(missing_file):
 
 
 def test_apply_environment_refuses_a_value_with_a_null_byte(missing_file):
-    """Befund 2: erst prüfen, dann setzen."""
+    """Finding 2: check first, then set."""
     environ = {}
     result = config.apply_environment(
-        env={"TYPESAFE_API_KEY": "ts-fake-mit\x00nullbyte"},
+        env={"TYPESAFE_API_KEY": "ts-fake-with\x00nullbyte"},
         config_path=missing_file,
         environ=environ,
     )
     assert result.ok is False
     assert environ == {}
-    assert any("Nullbyte" in note for note in result.notes)
+    assert any("null byte" in note for note in result.notes)
     assert "nullbyte" not in "\n".join(result.notes)
 
 
@@ -731,11 +745,11 @@ def test_apply_environment_never_puts_a_value_into_a_note(missing_file):
     assert FAKE_MOONSHOT not in haystack
 
 
-# --- Befund 3: Schlüssel und Basis-URL müssen zusammenpassen -----------------
+# --- Finding 3: key and base URL must match ---------------------------------
 
 
 def test_a_stale_base_url_does_not_hijack_the_kimi_key(monkeypatch, tmp_path):
-    """Befund 3: Kimi-Schlüssel aus der Datei, DeepSeek-URL aus der alten Shell."""
+    """Finding 3: Kimi key from the file, DeepSeek URL from the old shell."""
     path = tmp_path / "env"
     path.write_text(f"MOONSHOT_API_KEY={FAKE_MOONSHOT}\n", encoding="utf-8")
     monkeypatch.setenv("TYPESAFE_API_KEY", FAKE_TYPESAFE)
@@ -750,7 +764,7 @@ def test_a_stale_base_url_does_not_hijack_the_kimi_key(monkeypatch, tmp_path):
 
 
 def test_the_mismatched_base_url_does_not_reach_the_environment(monkeypatch, tmp_path):
-    """Befund 3: auch apply_environment darf die falsche Basis-URL nicht setzen."""
+    """Finding 3: apply_environment must not set the wrong base URL either."""
     path = tmp_path / "env"
     path.write_text(f"MOONSHOT_API_KEY={FAKE_MOONSHOT}\n", encoding="utf-8")
     environ = {}
@@ -765,7 +779,7 @@ def test_the_mismatched_base_url_does_not_reach_the_environment(monkeypatch, tmp
 
 
 def test_an_unknown_host_is_kept_but_gets_a_hint(monkeypatch, missing_file):
-    """Ein eigener Zwischenserver bleibt erlaubt, bekommt aber einen Hinweis."""
+    """A custom proxy server stays allowed, but gets a note."""
     monkeypatch.setenv("MOONSHOT_API_KEY", FAKE_MOONSHOT)
     monkeypatch.setenv("TEXT_MODEL_BASE_URL", "https://proxy.example.com/v1")
     result = run(missing_file)
@@ -775,7 +789,7 @@ def test_an_unknown_host_is_kept_but_gets_a_hint(monkeypatch, missing_file):
 
 
 def test_an_own_base_url_with_the_neutral_key_stays_untouched(monkeypatch, missing_file):
-    """TEXT_MODEL_API_KEY gehört keinem Anbieter, dort wird nichts verworfen."""
+    """TEXT_MODEL_API_KEY belongs to no provider, so nothing is discarded there."""
     monkeypatch.setenv("TEXT_MODEL_API_KEY", FAKE_TEXT)
     monkeypatch.setenv("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1")
     result = run(missing_file)
@@ -784,7 +798,7 @@ def test_an_own_base_url_with_the_neutral_key_stays_untouched(monkeypatch, missi
 
 
 def test_a_model_name_from_another_provider_only_gets_a_hint(monkeypatch, missing_file):
-    """Befund 3: beim Modellnamen genügt ein Hinweis, Namen sind frei."""
+    """Finding 3: for the model name a note is enough, names are free."""
     monkeypatch.setenv("MOONSHOT_API_KEY", FAKE_MOONSHOT)
     monkeypatch.setenv("TEXT_MODEL", "deepseek-chat")
     result = run(missing_file)
@@ -801,11 +815,11 @@ def test_a_fitting_model_name_produces_no_hint(monkeypatch, missing_file):
     assert result.notes == ()
 
 
-# --- Befund 7: Schlüssel aus reinen Leerzeichen ------------------------------
+# --- Finding 7: keys made of whitespace only -------------------------------
 
 
 def test_apply_environment_removes_a_whitespace_only_key(missing_file):
-    """Befund 7: was die Diagnose als fehlend wertet, muss aus der Umgebung raus."""
+    """Finding 7: what the diagnosis treats as missing must leave the environment."""
     environ = {"TYPESAFE_API_KEY": "   ", "TEXT_MODEL_API_KEY": "  \t "}
     source = dict(environ)
     result = config.apply_environment(env=source, config_path=missing_file, environ=environ)
@@ -835,11 +849,11 @@ def test_apply_environment_leaves_foreign_variables_alone(missing_file):
     assert environ == {"PATH": "/usr/bin", "HOME": "/Users/test"}
 
 
-# --- Befund 5: nur gewöhnliche Dateien, nur bis zur Obergrenze --------------
+# --- Finding 5: only regular files, only up to the limit ---------------------
 
 
 def test_a_fifo_is_skipped_instead_of_blocking(tmp_path):
-    """Befund 5: Path.read_text() würde im open() einer FIFO stehen bleiben."""
+    """Finding 5: Path.read_text() would block in the open() of a FIFO."""
     path = tmp_path / "env"
     os.mkfifo(path)
     finished = threading.Event()
@@ -850,11 +864,11 @@ def test_a_fifo_is_skipped_instead_of_blocking(tmp_path):
         finished.set()
 
     threading.Thread(target=work, daemon=True).start()
-    assert finished.wait(5), "read_config_file() haengt an der FIFO"
+    assert finished.wait(5), "read_config_file() hangs on the FIFO"
     values, notes = box["result"]
     assert values == {}
     assert len(notes) == 1
-    assert "gewöhnliche Datei" in notes[0]
+    assert "regular file" in notes[0]
 
 
 def test_diagnose_does_not_hang_on_a_fifo(monkeypatch, tmp_path):
@@ -869,7 +883,7 @@ def test_diagnose_does_not_hang_on_a_fifo(monkeypatch, tmp_path):
         finished.set()
 
     threading.Thread(target=work, daemon=True).start()
-    assert finished.wait(10), "diagnose() haengt an der FIFO"
+    assert finished.wait(10), "diagnose() hangs on the FIFO"
     assert box["result"].typesafe.present is True
     assert box["result"].notes
 
@@ -881,7 +895,7 @@ def test_an_oversized_file_is_skipped(tmp_path, monkeypatch):
     values, notes = config.read_config_file(path)
     assert values == {}
     assert len(notes) == 1
-    assert "Bytes" in notes[0]
+    assert "bytes" in notes[0]
 
 
 def test_a_file_at_the_limit_is_still_read(tmp_path, monkeypatch):
@@ -894,11 +908,11 @@ def test_a_file_at_the_limit_is_still_read(tmp_path, monkeypatch):
     assert notes == ()
 
 
-# --- Befund 6: export NAME=WERT ---------------------------------------------
+# --- Finding 6: export NAME=VALUE -------------------------------------------
 
 
 def test_export_prefix_is_understood(tmp_path):
-    """Befund 6: die verbreitetste Schreibweise darf nicht verloren gehen."""
+    """Finding 6: the most common notation must not get lost."""
     path = tmp_path / "env"
     path.write_text(
         f"export TYPESAFE_API_KEY={FAKE_TYPESAFE}\nexport MOONSHOT_API_KEY={FAKE_MOONSHOT}\n",
@@ -914,10 +928,10 @@ def test_export_prefix_is_understood(tmp_path):
 
 
 def test_an_invalid_name_counts_as_skipped(tmp_path):
-    """Befund 6: was kein gültiger Variablenname ist, taucht im Hinweis auf."""
+    """Finding 6: whatever is not a valid variable name shows up in the note."""
     path = tmp_path / "env"
     path.write_text(
-        f"2FALSCH=wert\nmit leerzeichen=wert\nTYPESAFE_API_KEY={FAKE_TYPESAFE}\n",
+        f"2WRONG=value\nwith spaces=value\nTYPESAFE_API_KEY={FAKE_TYPESAFE}\n",
         encoding="utf-8",
     )
     values, notes = config.read_config_file(path)
@@ -926,13 +940,13 @@ def test_an_invalid_name_counts_as_skipped(tmp_path):
     assert "2" in notes[0]
 
 
-# --- Befund 9: Kommentar am Zeilenende --------------------------------------
+# --- Finding 9: comment at the end of a line -------------------------------
 
 
 def test_a_trailing_comment_is_removed(tmp_path):
     path = tmp_path / "env"
     path.write_text(
-        f"TYPESAFE_API_KEY={FAKE_TYPESAFE} # der Schluessel fuer TypeSafe\n",
+        f"TYPESAFE_API_KEY={FAKE_TYPESAFE} # the key for TypeSafe\n",
         encoding="utf-8",
     )
     values, notes = config.read_config_file(path)
@@ -942,26 +956,26 @@ def test_a_trailing_comment_is_removed(tmp_path):
 
 def test_a_comment_after_a_quoted_value_is_removed(tmp_path):
     path = tmp_path / "env"
-    path.write_text(f'TYPESAFE_API_KEY="{FAKE_TYPESAFE}"  # Kommentar\n', encoding="utf-8")
+    path.write_text(f'TYPESAFE_API_KEY="{FAKE_TYPESAFE}"  # comment\n', encoding="utf-8")
     values, _ = config.read_config_file(path)
     assert values["TYPESAFE_API_KEY"] == FAKE_TYPESAFE
 
 
 def test_a_hash_inside_a_quoted_value_survives(tmp_path):
     path = tmp_path / "env"
-    path.write_text('TYPESAFE_API_KEY="ts-fake-mit # darin"\n', encoding="utf-8")
+    path.write_text('TYPESAFE_API_KEY="ts-fake-with # inside"\n', encoding="utf-8")
     values, _ = config.read_config_file(path)
-    assert values["TYPESAFE_API_KEY"] == "ts-fake-mit # darin"
+    assert values["TYPESAFE_API_KEY"] == "ts-fake-with # inside"
 
 
 def test_a_hash_without_a_space_stays_part_of_the_value(tmp_path):
     path = tmp_path / "env"
-    path.write_text("TYPESAFE_API_KEY=ts-fake#teil\n", encoding="utf-8")
+    path.write_text("TYPESAFE_API_KEY=ts-fake#part\n", encoding="utf-8")
     values, _ = config.read_config_file(path)
-    assert values["TYPESAFE_API_KEY"] == "ts-fake#teil"
+    assert values["TYPESAFE_API_KEY"] == "ts-fake#part"
 
 
-# --- Befund 10: Datei in falscher Kodierung ---------------------------------
+# --- Finding 10: file in the wrong encoding ---------------------------------
 
 
 def test_a_utf16_file_is_reported_instead_of_being_silently_empty(tmp_path):
@@ -975,35 +989,35 @@ def test_a_utf16_file_is_reported_instead_of_being_silently_empty(tmp_path):
     assert result.notes
 
 
-# --- Befund 12: Einzahl und Mehrzahl ----------------------------------------
+# --- Finding 12: singular and plural ----------------------------------------
 
 
 def test_a_single_skipped_line_uses_the_singular(tmp_path):
     path = tmp_path / "env"
-    path.write_text(f"kaputt\nTYPESAFE_API_KEY={FAKE_TYPESAFE}\n", encoding="utf-8")
+    path.write_text(f"broken\nTYPESAFE_API_KEY={FAKE_TYPESAFE}\n", encoding="utf-8")
     _, notes = config.read_config_file(path)
-    assert "wurde 1 Zeile übersprungen" in notes[0]
-    assert "entspricht" in notes[0]
+    assert "1 line was skipped" in notes[0]
+    assert "does not match" in notes[0]
 
 
 def test_two_skipped_lines_use_the_plural(tmp_path):
     path = tmp_path / "env"
-    path.write_text("kaputt\nnoch kaputt\n", encoding="utf-8")
+    path.write_text("broken\nstill broken\n", encoding="utf-8")
     _, notes = config.read_config_file(path)
-    assert "wurden 2 Zeilen übersprungen" in notes[0]
-    assert "entsprechen" in notes[0]
+    assert "2 lines were skipped" in notes[0]
+    assert "they do not match" in notes[0]
 
 
-# --- Befund 13: display_path schneidet auf Pfadebene ------------------------
+# --- Finding 13: display_path cuts at the path level -----------------------
 
 
 def test_display_path_only_shortens_at_a_path_boundary(monkeypatch, tmp_path):
-    home = tmp_path / "nutzer"
+    home = tmp_path / "user"
     home.mkdir()
     monkeypatch.setattr(config.Path, "home", classmethod(lambda cls: home))
-    assert config.display_path(home / "geheim") == str(Path("~") / "geheim")
-    fremd = tmp_path / "nutzerXYZ" / "geheim"
-    assert config.display_path(fremd) == str(fremd)
+    assert config.display_path(home / "secret") == str(Path("~") / "secret")
+    foreign = tmp_path / "userXYZ" / "secret"
+    assert config.display_path(foreign) == str(foreign)
     assert config.display_path(home) == "~"
 
 
@@ -1011,21 +1025,21 @@ def test_display_path_survives_a_broken_object():
     assert isinstance(config.display_path(HostilePath()), str)
 
 
-# --- Befund 8: Gesamtbudget für die Browser-Prüfung -------------------------
+# --- Finding 8: overall budget for the browser probe ------------------------
 
 
 def test_a_slow_browser_probe_is_capped_and_counts_as_unknown(monkeypatch, missing_file):
-    """Befund 8: das Budget gilt für den ganzen Vorgang, nicht je Socket."""
+    """Finding 8: the budget applies to the whole operation, not per socket."""
     monkeypatch.setenv("TYPESAFE_API_KEY", FAKE_TYPESAFE)
     monkeypatch.setenv("MOONSHOT_API_KEY", FAKE_MOONSHOT)
     monkeypatch.setattr(config, "BROWSER_PROBE_BUDGET_SECONDS", 0.05)
 
-    def tropft():
+    def trickles():
         time.sleep(30)
-        raise AssertionError("haette nie zurueckkommen duerfen")
+        raise AssertionError("should never have returned")
 
     started = time.monotonic()
-    result = config.diagnose(config_path=missing_file, probe_browser=tropft)
+    result = config.diagnose(config_path=missing_file, probe_browser=trickles)
     assert time.monotonic() - started < 5
     assert result.browser.known is False
     assert result.blocked_operations == ()
@@ -1036,31 +1050,31 @@ def test_a_slow_browser_probe_is_capped_and_counts_as_unknown(monkeypatch, missi
 def test_an_unknown_browser_state_does_not_block_the_run(monkeypatch, missing_file):
     monkeypatch.setenv("TYPESAFE_API_KEY", FAKE_TYPESAFE)
 
-    def unbekannt():
+    def unknown():
         return config.BrowserStatus(
             daemon_running=False,
             browser_connected=False,
-            detail="Der Zustand ist in diesem Test unbekannt.",
+            detail="The state is unknown in this test.",
             known=False,
         )
 
-    result = config.diagnose(config_path=missing_file, probe_browser=unbekannt)
+    result = config.diagnose(config_path=missing_file, probe_browser=unknown)
     assert result.ready is True
-    assert not any("Daemon" in s for s in result.blocked_operations)
-    assert any("unbekannt" in note for note in result.notes)
+    assert not any("daemon" in s for s in result.blocked_operations)
+    assert any("unknown" in note for note in result.notes)
 
 
 def test_a_busy_daemon_is_not_reported_as_disconnected(monkeypatch):
-    """Befund 8: ein Nein erst am Zeitlimit ist keine Auskunft."""
+    """Finding 8: a no that arrives only at the time limit is not an answer."""
     import browser_harness.admin as admin
 
     monkeypatch.setattr(admin, "daemon_alive", lambda *a, **k: True)
 
-    def langsam(*args, **kwargs):
+    def slow(*args, **kwargs):
         time.sleep(config._DAEMON_SLOW_ANSWER_SECONDS + 0.05)
         return False
 
-    monkeypatch.setattr(admin, "daemon_browser_ready", langsam)
+    monkeypatch.setattr(admin, "daemon_browser_ready", slow)
     status = config.probe_browser()
     assert status.known is False
     assert status.daemon_running is True
@@ -1077,13 +1091,13 @@ def test_a_quick_no_still_means_no_chrome(monkeypatch):
 
 
 def test_the_browser_probe_docstring_names_the_budget():
-    """Befund 8: der Docstring darf nichts versprechen, was nicht stimmt."""
+    """Finding 8: the docstring must not promise anything that is not true."""
     text = config.probe_browser.__doc__ or ""
-    assert "je Socket-Aufruf" in text
+    assert "per socket call" in text
     assert "BROWSER_PROBE_BUDGET_SECONDS" in text
 
 
-# --- browser-harness gehört in die Abhängigkeiten ---------------------------
+# --- browser-harness belongs in the dependencies ----------------------------
 
 
 def test_browser_harness_is_a_declared_dependency():
@@ -1093,32 +1107,32 @@ def test_browser_harness_is_a_declared_dependency():
     assert "browser-harness" in block
 
 
-# --- Auch die neuen Hinweise sind ganze deutsche Sätze ----------------------
+# --- The new notes are whole English sentences too -------------------------
 
 
 def scenarios(tmp_path, missing_file):
-    """Lagen, die einen Hinweis erzeugen, je als Paar aus Umgebung und Pfad."""
+    """Scenarios that produce a note, each as a pair of environment and path."""
     fifo = tmp_path / "fifo"
     os.mkfifo(fifo)
-    kaputt = tmp_path / "kaputt"
-    kaputt.write_text("keine zuweisung\nauch nicht\n", encoding="utf-8")
-    eine = tmp_path / "eine"
-    eine.write_text("keine zuweisung\n", encoding="utf-8")
+    broken = tmp_path / "broken"
+    broken.write_text("no assignment\nnor this\n", encoding="utf-8")
+    single = tmp_path / "single"
+    single.write_text("no assignment\n", encoding="utf-8")
     moonshot = tmp_path / "moonshot"
     moonshot.write_text(f"MOONSHOT_API_KEY={FAKE_MOONSHOT}\n", encoding="utf-8")
     return [
         ({}, fifo),
-        ({}, kaputt),
-        ({}, eine),
+        ({}, broken),
+        ({}, single),
         ({"TEXT_MODEL_BASE_URL": "https://api.deepseek.com/v1"}, moonshot),
         ({"TEXT_MODEL_BASE_URL": "https://proxy.example.com/v1"}, moonshot),
-        ({"TEXT_MODEL_BASE_URL": "kaputt:sehr"}, moonshot),
+        ({"TEXT_MODEL_BASE_URL": "broken:very"}, moonshot),
         ({"TEXT_MODEL": "deepseek-chat"}, moonshot),
         ({}, object()),
     ]
 
 
-def test_every_note_is_a_whole_german_sentence(tmp_path, missing_file):
+def test_every_note_is_a_whole_english_sentence(tmp_path, missing_file):
     seen = 0
     for env, path in scenarios(tmp_path, missing_file):
         result = config.diagnose(env=env, config_path=path, probe_browser=browser())
@@ -1127,10 +1141,11 @@ def test_every_note_is_a_whole_german_sentence(tmp_path, missing_file):
             assert sentence[0].isupper(), sentence
             assert sentence.rstrip().endswith("."), sentence
             assert len(sentence.split()) >= 5, sentence
-            assert "ß" not in sentence, sentence
+            assert not GERMAN_LETTERS.search(sentence), sentence
+            assert not looks_german(sentence), sentence
             assert "–" not in sentence and "—" not in sentence, sentence
             assert " - " not in sentence, sentence
-        assert result.notes, f"Lage ohne Hinweis: {env} {path}"
+        assert result.notes, f"Scenario without a note: {env} {path}"
     assert seen > 20
 
 
@@ -1145,6 +1160,7 @@ def test_the_notes_of_a_failed_application_are_whole_sentences(missing_file):
         assert sentence[0].isupper()
         assert sentence.rstrip().endswith(".")
         assert len(sentence.split()) >= 5
-        assert "ß" not in sentence
+        assert not GERMAN_LETTERS.search(sentence)
+        assert not looks_german(sentence)
         assert "–" not in sentence and "—" not in sentence
         assert " - " not in sentence
