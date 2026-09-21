@@ -1,0 +1,51 @@
+[project]
+name = "jev-mcp"
+version = "0.1.0"
+description = "MCP server exposing the jev-ultrafast browser agent to Claude Code and Claude Desktop"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "SAITS - Swiss AI Tech Services", email = "hello@saits.ai" }]
+requires-python = ">=3.12"
+keywords = ["mcp", "browser-agent", "claude", "jev", "typesafe", "browser-automation"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+]
+# jev-ultrafast is not published on PyPI. It is pinned to an exact upstream commit so a
+# fresh install gets the version this server was built and tested against.
+dependencies = [
+    "mcp>=2.2,<3",
+    "jev-ultrafast @ git+https://github.com/browser-use/jev-ultrafast@1231850a0bf1a0c0341fe408ef1668dbbfdfac46",
+    "browser-harness",
+]
+
+[project.urls]
+Repository = "https://github.com/SAITS-Swiss-AI-Tech-Services/jev-mcp"
+Issues = "https://github.com/SAITS-Swiss-AI-Tech-Services/jev-mcp/issues"
+
+[project.scripts]
+jev-mcp = "jev_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[dependency-groups]
+dev = ["pytest>=8.4,<9", "ruff>=0.14,<1"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

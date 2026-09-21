@@ -1,0 +1,9 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": [
+    "jev_mcp",
+    "tests"
+  ],
+  "reportMissingImports": true
+}
