@@ -212,6 +212,12 @@ dialog. It waits without a time limit.
 cd /absolute/path/to/jev-mcp && echo 'print(page_info())' | uv run browser-harness
 ```
 
+If the connection ends before approval and Chrome never asked, Chrome is most likely running in
+the background without a window. That happens when "Continue running background apps when Google
+Chrome is closed" is on: closing Chrome leaves it running, and an approval dialog with no window to
+appear in is silently dropped. Quit Chrome fully, start it with a normal window, and try again.
+Turning that setting off (Settings, System) avoids the trap for good.
+
 `browser-harness mac-approve` can click the dialog for you on macOS, but only when Chrome's
 interface is in English: it matches the English dialog text. It also needs the Accessibility
 permission for your terminal.
